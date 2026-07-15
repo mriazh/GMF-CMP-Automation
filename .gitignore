@@ -1,0 +1,45 @@
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Firefox profiles
+firefox_profile/
+**/firefox_profile/
+
+# Downloads
+downloads/
+**/downloads/
+
+# Screenshots
+screenshots/
+**/screenshots/*.png
+**/screenshots/*.jpg
+
+# Generated reports
+*_with_dashboard.xlsx
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.egg-info/
+src/*.egg-info/
