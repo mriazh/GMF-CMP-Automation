@@ -41,22 +41,24 @@ class TestConfig:
             assert config.otp_poll_interval_seconds == 5
             assert config.timezone == "Asia/Jakarta"
 
-    def test_missing_required_env_raises(self, monkeypatch):
+    def test_missing_required_env_raises(self, monkeypatch, tmp_path):
         """Test that missing required env vars raise safe ConfigurationError."""
-        # Clear all env vars
+        # Clear all env vars and avoid picking up a real .env from the repo
         for key in ["CMP_USERNAME", "CMP_PASSWORD", "GMF_EMAIL", "GMF_PASSWORD",
                     "FIREFOX_PROFILE_DIR", "DOWNLOAD_DIR"]:
             monkeypatch.delenv(key, raising=False)
+        monkeypatch.chdir(tmp_path)
 
         with pytest.raises(ConfigurationError, match="Missing required environment variable"):
             load_config()
 
-    def test_load_config_safe_error_message(self, monkeypatch):
+    def test_load_config_safe_error_message(self, monkeypatch, tmp_path):
         """Test that load_config error message does not expose values."""
-        # Clear all env vars
+        # Clear all env vars and avoid picking up a real .env from the repo
         for key in ["CMP_USERNAME", "CMP_PASSWORD", "GMF_EMAIL", "GMF_PASSWORD",
                     "FIREFOX_PROFILE_DIR", "DOWNLOAD_DIR"]:
             monkeypatch.delenv(key, raising=False)
+        monkeypatch.chdir(tmp_path)
 
         try:
             load_config()
@@ -108,6 +110,65 @@ class TestConfig:
                 Config()
 
             monkeypatch.setenv("OTP_TIMEOUT_SECONDS", "700")  # Above maximum
+            with pytest.raises(Exception):
+                Config()
+
+    def test_imap_defaults(self, monkeypatch):
+        """Test that IMAP settings use sensible defaults."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+
+            config = Config()
+            assert config.gmf_imap_host == "mail.gmf-aeroasia.co.id"
+            assert config.gmf_imap_port == 993
+
+    def test_imap_overrides(self, monkeypatch):
+        """Test that IMAP settings can be overridden via environment variables."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("GMF_IMAP_HOST", "imap.example.com")
+            monkeypatch.setenv("GMF_IMAP_PORT", "1430")
+
+            config = Config()
+            assert config.gmf_imap_host == "imap.example.com"
+            assert config.gmf_imap_port == 1430
+
+    def test_imap_port_bounds(self, monkeypatch):
+        """Test that an out-of-range IMAP port is rejected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("GMF_IMAP_PORT", "70000")
+
             with pytest.raises(Exception):
                 Config()
 

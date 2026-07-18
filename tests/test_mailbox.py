@@ -1,57 +1,14 @@
-"""Tests for mailbox OTP retrieval with mocked browser dependencies."""
+"""Tests for the IMAP-based mailbox OTP retrieval with mocked IMAP dependencies."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from cmp_automation.config import Config
-from cmp_automation.exceptions import OTPTimeoutError
-from cmp_automation.mailbox import MailboxClient, OTPToken, _EmailCandidate
-
-
-class _FakeRows:
-    """Fake Playwright locator that yields row indices."""
-
-    def __init__(self, count: int):
-        self._count = count
-
-    async def count(self) -> int:
-        return self._count
-
-    def nth(self, index: int) -> int:
-        return index
-
-
-class _FakeLocator:
-    """Fake Playwright locator with configurable element count."""
-
-    def __init__(self, count_value: int = 0):
-        self._count_value = count_value
-        self._attributes = {}
-
-    @property
-    def first(self) -> "_FakeLocator":
-        return self
-
-    async def count(self) -> int:
-        return self._count_value
-
-    async def click(self) -> None:
-        return None
-
-    async def wait_for(self, *args, **kwargs) -> None:
-        return None
-
-    async def get_attribute(self, attr: str) -> str | None:
-        return self._attributes.get(attr)
-
-    async def inner_text(self) -> str:
-        return ""
-
-    def set_attribute(self, attr: str, value: str) -> None:
-        self._attributes[attr] = value
+from cmp_automation.exceptions import OTPError, OTPTimeoutError
+from cmp_automation.mailbox import MailboxClient, OTPToken, _OtpMessage
 
 
 @pytest.fixture
@@ -89,6 +46,21 @@ def _start() -> datetime:
     return datetime(2024, 1, 15, 12, 0, 0, tzinfo=ZoneInfo("Asia/Jakarta"))
 
 
+def _message(
+    uid: str = "3",
+    subject: str = "CMP - YOUR TOKEN",
+    received: datetime | None = None,
+    body: str = "Your CMP OTP token is 123456. Do not share it.",
+) -> _OtpMessage:
+    """Build an _OtpMessage fixture."""
+    return _OtpMessage(
+        uid=uid,
+        subject=subject,
+        received_at=received if received is not None else _start(),
+        body=body,
+    )
+
+
 class TestGetLatestOtp:
     """Tests for OTP polling orchestration."""
 
@@ -97,56 +69,52 @@ class TestGetLatestOtp:
         """Test that the token is returned immediately when found."""
         start = _start()
         expected = _token(start)
-        page = AsyncMock()
-
         mailbox.set_workflow_start_time(start)
-        with patch.object(mailbox, "ensure_authenticated", new=AsyncMock()) as mock_auth, \
-             patch.object(mailbox, "_find_latest_otp", new=AsyncMock(return_value=expected)) as mock_find:
-            result = await mailbox.get_latest_otp(page, "CMP - YOUR TOKEN", 120, 5)
+
+        with patch.object(mailbox, "connect", new=AsyncMock()) as mock_connect, \
+             patch.object(mailbox, "_poll_once", return_value=expected) as mock_poll:
+            result = await mailbox.get_latest_otp("CMP - YOUR TOKEN", 120, 5)
 
         assert result is expected
-        mock_auth.assert_awaited_once_with(page)
-        mock_find.assert_awaited_once_with(page, "CMP - YOUR TOKEN")
+        mock_connect.assert_awaited_once()
+        mock_poll.assert_called_once_with("CMP - YOUR TOKEN", start)
 
     @pytest.mark.asyncio
     async def test_polls_until_token_found(self, mailbox):
         """Test that polling retries until the token appears."""
         start = _start()
         token = _token(start)
-        page = AsyncMock()
-
         mailbox.set_workflow_start_time(start)
-        with patch.object(mailbox, "ensure_authenticated", new=AsyncMock()), \
-             patch.object(mailbox, "_find_latest_otp", new=AsyncMock(side_effect=[None, token])) as mock_find, \
+
+        with patch.object(mailbox, "connect", new=AsyncMock()), \
+             patch.object(mailbox, "_poll_once", side_effect=[None, token]) as mock_poll, \
              patch("asyncio.sleep", new=AsyncMock()):
-            result = await mailbox.get_latest_otp(page, "CMP - YOUR TOKEN", 10, 1)
+            result = await mailbox.get_latest_otp("CMP - YOUR TOKEN", 10, 1)
 
         assert result is token
-        assert mock_find.await_count == 2
+        assert mock_poll.call_count == 2
 
     @pytest.mark.asyncio
     async def test_times_out_when_token_never_appears(self, mailbox):
         """Test that OTPTimeoutError is raised when no email arrives in time."""
         start = _start()
-        page = AsyncMock()
-
         mailbox.set_workflow_start_time(start)
-        with patch.object(mailbox, "ensure_authenticated", new=AsyncMock()), \
-             patch.object(mailbox, "_find_latest_otp", new=AsyncMock(return_value=None)):
+
+        with patch.object(mailbox, "connect", new=AsyncMock()), \
+             patch.object(mailbox, "_poll_once", return_value=None):
             with pytest.raises(OTPTimeoutError, match="timed out"):
-                await mailbox.get_latest_otp(page, "CMP - YOUR TOKEN", 1, 1)
+                await mailbox.get_latest_otp("CMP - YOUR TOKEN", 0, 1)
 
     @pytest.mark.asyncio
     async def test_timeout_message_contains_no_secrets(self, mailbox):
         """Test that the timeout message exposes no token or credential values."""
         start = _start()
-        page = AsyncMock()
-
         mailbox.set_workflow_start_time(start)
-        with patch.object(mailbox, "ensure_authenticated", new=AsyncMock()), \
-             patch.object(mailbox, "_find_latest_otp", new=AsyncMock(return_value=None)):
+
+        with patch.object(mailbox, "connect", new=AsyncMock()), \
+             patch.object(mailbox, "_poll_once", return_value=None):
             with pytest.raises(OTPTimeoutError) as excinfo:
-                await mailbox.get_latest_otp(page, "CMP - YOUR TOKEN", 1, 1)
+                await mailbox.get_latest_otp("CMP - YOUR TOKEN", 0, 1)
 
         message = str(excinfo.value)
         assert "CMP - YOUR TOKEN" in message
@@ -154,270 +122,194 @@ class TestGetLatestOtp:
         assert "123456" not in message
         assert "test@test.com" not in message
 
-
-class TestFindLatestOtp:
-    """Tests for email filtering and newest-selection logic."""
-
     @pytest.mark.asyncio
-    async def test_selects_newest_valid_email(self, mailbox):
-        """Test that the newest email at/after start time is opened and returned."""
-        start = _start()
-        page = AsyncMock()
-        page.locator = MagicMock(return_value=_FakeRows(4))
+    async def test_requires_workflow_start_time(self, mailbox):
+        """Test that polling raises if workflow start time was never set."""
+        with pytest.raises(OTPError, match="not set"):
+            await mailbox.get_latest_otp("CMP - YOUR TOKEN", 0, 1)
 
-        rows_data = [
-            ("CMP - YOUR TOKEN", "2024-01-15 12:10:00", "msg-id-1"),
-            ("CMP - YOUR TOKEN", "2024-01-15 12:20:00", "msg-id-2"),
-            ("CMP - YOUR TOKEN", "2024-01-15 12:05:00", "msg-id-3"),
-            ("Weekly Report", "2024-01-15 12:30:00", "msg-id-4"),
+
+class TestPollOnce:
+    """Tests for the single IMAP poll cycle (filtering + newest selection)."""
+
+    def test_returns_newest_valid_message(self, mailbox):
+        """Test that the newest message at/after start time is selected."""
+        start = _start()
+        mailbox._connection = MagicMock()
+        messages = [
+            _message("1", received=datetime(2024, 1, 15, 12, 5, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
+            _message("2", received=datetime(2024, 1, 15, 12, 10, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
         ]
 
-        async def fake_read(row: int):
-            subject, ts, identity = rows_data[row]
-            return (subject, ts, identity)
-
-        mailbox.set_workflow_start_time(start)
-        with patch.object(mailbox, "_read_row_metadata", new=AsyncMock(side_effect=fake_read)), \
-             patch.object(mailbox, "_navigate_to_inbox", new=AsyncMock()) as mock_nav, \
-             patch.object(mailbox, "_open_email_and_extract_token", new=AsyncMock(return_value="654321")) as mock_open:
-            result = await mailbox._find_latest_otp(page, "CMP - YOUR TOKEN")
+        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
+             patch.object(mailbox, "_search_uids", return_value=[b"1", b"2"]), \
+             patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]), \
+             patch.object(mailbox, "_parse_message", side_effect=messages):
+            result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is not None
-        assert result.token == "654321"
-        assert result.email_received_at == datetime(2024, 1, 15, 12, 20, 0, tzinfo=ZoneInfo("Asia/Jakarta"))
-        mock_nav.assert_awaited_once()
-        mock_open.assert_awaited_once()
-        opened_candidate = mock_open.await_args.args[1]
-        assert opened_candidate.row_identity == "msg-id-2"
+        assert result.token == "123456"
+        assert result.email_subject == "CMP - YOUR TOKEN"
+        assert result.email_received_at == datetime(
+            2024, 1, 15, 12, 10, 0, tzinfo=ZoneInfo("Asia/Jakarta")
+        )
 
-    @pytest.mark.asyncio
-    async def test_rejects_all_older_emails(self, mailbox):
+    def test_rejects_all_older_emails(self, mailbox):
         """Test that no email older than start time is accepted."""
         start = _start()
-        page = AsyncMock()
-        page.locator = MagicMock(return_value=_FakeRows(2))
-
-        rows_data = [
-            ("CMP - YOUR TOKEN", "2024-01-15 11:59:00", "msg-id-1"),
-            ("CMP - YOUR TOKEN", "2024-01-14 23:59:00", "msg-id-2"),
+        mailbox._connection = MagicMock()
+        messages = [
+            _message("1", received=datetime(2024, 1, 15, 11, 59, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
+            _message("2", received=datetime(2024, 1, 14, 23, 59, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
         ]
 
-        async def fake_read(row: int):
-            subject, ts, identity = rows_data[row]
-            return (subject, ts, identity)
-
-        mailbox.set_workflow_start_time(start)
-        with patch.object(mailbox, "_read_row_metadata", new=AsyncMock(side_effect=fake_read)), \
-             patch.object(mailbox, "_navigate_to_inbox", new=AsyncMock()), \
-             patch.object(mailbox, "_open_email_and_extract_token", new=AsyncMock()) as mock_open:
-            result = await mailbox._find_latest_otp(page, "CMP - YOUR TOKEN")
+        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
+             patch.object(mailbox, "_search_uids", return_value=[b"1", b"2"]), \
+             patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]), \
+             patch.object(mailbox, "_parse_message", side_effect=messages):
+            result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is None
-        mock_open.assert_not_awaited()
 
-    @pytest.mark.asyncio
-    async def test_accepts_email_exactly_at_start_time(self, mailbox):
+    def test_accepts_email_exactly_at_start_time(self, mailbox):
         """Test that an email received exactly at start time is accepted."""
         start = _start()
-        page = AsyncMock()
-        page.locator = MagicMock(return_value=_FakeRows(1))
+        mailbox._connection = MagicMock()
 
-        async def fake_read(row: int):
-            return ("CMP - YOUR TOKEN", "2024-01-15 12:00:00", "msg-id-1")
-
-        mailbox.set_workflow_start_time(start)
-        with patch.object(mailbox, "_read_row_metadata", new=AsyncMock(side_effect=fake_read)), \
-             patch.object(mailbox, "_navigate_to_inbox", new=AsyncMock()), \
-             patch.object(mailbox, "_open_email_and_extract_token", new=AsyncMock(return_value="111111")):
-            result = await mailbox._find_latest_otp(page, "CMP - YOUR TOKEN")
+        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
+             patch.object(mailbox, "_search_uids", return_value=[b"1"]), \
+             patch.object(mailbox, "_fetch_message", return_value=("data",)), \
+             patch.object(mailbox, "_parse_message", return_value=_message("1", received=start)):
+            result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is not None
         assert result.email_received_at == start
 
-    @pytest.mark.asyncio
-    async def test_tries_next_candidate_when_newest_has_no_token(self, mailbox):
-        """Test that older candidates are tried if the newest has no token."""
+    def test_filters_by_exact_subject(self, mailbox):
+        """Test that messages with a different subject are ignored."""
         start = _start()
-        page = AsyncMock()
-        page.locator = MagicMock(return_value=_FakeRows(2))
+        mailbox._connection = MagicMock()
 
-        rows_data = [
-            ("CMP - YOUR TOKEN", "2024-01-15 12:10:00", "msg-id-1"),
-            ("CMP - YOUR TOKEN", "2024-01-15 12:05:00", "msg-id-2"),
-        ]
-
-        async def fake_read(row: int):
-            subject, ts, identity = rows_data[row]
-            return (subject, ts, identity)
-
-        mailbox.set_workflow_start_time(start)
-        with patch.object(mailbox, "_read_row_metadata", new=AsyncMock(side_effect=fake_read)), \
-             patch.object(mailbox, "_navigate_to_inbox", new=AsyncMock()) as mock_nav, \
-             patch.object(mailbox, "_open_email_and_extract_token", new=AsyncMock(side_effect=[None, "222222"])) as mock_open:
-            result = await mailbox._find_latest_otp(page, "CMP - YOUR TOKEN")
+        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
+             patch.object(mailbox, "_search_uids", return_value=[b"1", b"2"]), \
+             patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]), \
+             patch.object(mailbox, "_parse_message", side_effect=[
+                 _message("1", subject="CMP - YOUR TOKEN", received=datetime(
+                     2024, 1, 15, 12, 6, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
+                 _message("2", subject="Weekly Report", received=datetime(
+                     2024, 1, 15, 12, 7, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
+             ]):
+            result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is not None
-        assert result.token == "222222"
-        assert result.email_received_at == datetime(2024, 1, 15, 12, 5, 0, tzinfo=ZoneInfo("Asia/Jakarta"))
-        assert mock_open.await_count == 2
-        # Re-navigated to the inbox between the two open attempts
-        assert mock_nav.await_count == 2
-
-    @pytest.mark.asyncio
-    async def test_filters_by_exact_subject(self, mailbox):
-        """Test that rows with a different subject are ignored."""
-        start = _start()
-        page = AsyncMock()
-        page.locator = MagicMock(return_value=_FakeRows(3))
-
-        rows_data = [
-            ("CMP - YOUR TOKEN", "2024-01-15 12:05:00", "msg-id-1"),
-            ("CMP - Your Token", "2024-01-15 12:06:00", "msg-id-2"),
-            ("Weekly Report", "2024-01-15 12:07:00", "msg-id-3"),
-        ]
-
-        async def fake_read(row: int):
-            subject, ts, identity = rows_data[row]
-            return (subject, ts, identity)
-
-        mailbox.set_workflow_start_time(start)
-        with patch.object(mailbox, "_read_row_metadata", new=AsyncMock(side_effect=fake_read)), \
-             patch.object(mailbox, "_navigate_to_inbox", new=AsyncMock()), \
-             patch.object(mailbox, "_open_email_and_extract_token", new=AsyncMock(return_value="333333")) as mock_open:
-            result = await mailbox._find_latest_otp(page, "CMP - YOUR TOKEN")
-
-        assert result is not None
-        # Case-insensitive exact match is accepted; unrelated subjects are rejected
-        assert result.email_subject == "CMP - Your Token"
-        assert result.email_received_at == datetime(2024, 1, 15, 12, 6, 0, tzinfo=ZoneInfo("Asia/Jakarta"))
-        opened_candidate = mock_open.await_args.args[1]
-        assert opened_candidate.row_identity == "msg-id-2"
-
-    @pytest.mark.asyncio
-    async def test_collect_candidates_skips_rows_without_metadata(self, mailbox):
-        """Test that rows with no readable subject are skipped."""
-        start = _start()
-        page = AsyncMock()
-        page.locator = MagicMock(return_value=_FakeRows(3))
-
-        async def fake_read(row: int):
-            if row == 1:
-                return None
-            return ("CMP - YOUR TOKEN", "2024-01-15 12:05:00", f"msg-id-{row}")
-
-        mailbox.set_workflow_start_time(start)
-        with patch.object(mailbox, "_read_row_metadata", new=AsyncMock(side_effect=fake_read)):
-            candidates = await mailbox._collect_email_candidates(page, "CMP - YOUR TOKEN")
-
-        assert len(candidates) == 2
-
-
-class TestOpenEmailAndExtractToken:
-    """Tests for opening an email and extracting its token."""
-
-    @pytest.mark.asyncio
-    async def test_extracts_token_from_body(self, mailbox):
-        """Test that the token is read from the email body."""
-        page = AsyncMock()
-        row = AsyncMock()
-        locator_mock = MagicMock()
-        locator_mock.nth.return_value = row
-        page.locator = MagicMock(return_value=locator_mock)
-        candidate = _EmailCandidate(
-            email_subject="CMP - YOUR TOKEN",
-            email_received_at=_start(),
-            list_selector=".email-item",
-            row_identity="msg-id-1",
+        assert result.email_subject == "CMP - YOUR TOKEN"
+        assert result.email_received_at == datetime(
+            2024, 1, 15, 12, 6, 0, tzinfo=ZoneInfo("Asia/Jakarta")
         )
 
-        with patch.object(mailbox, "_read_email_body", new=AsyncMock(return_value="Your OTP is 123456. Do not share it.")), \
-             patch.object(mailbox, "_locate_row_by_identity", new=AsyncMock(return_value=row)), \
-             patch.object(mailbox, "_wait_for_email_body", new=AsyncMock()), \
-             patch.object(mailbox, "_read_email_sender", new=AsyncMock(return_value=None)), \
-             patch.object(mailbox, "_read_row_metadata", new=AsyncMock(return_value=("CMP - YOUR TOKEN", "2024-01-15 12:00:00", "msg-id-1"))):
-            token = await mailbox._open_email_and_extract_token(page, candidate)
+    def test_returns_none_when_body_has_no_token(self, mailbox):
+        """Test that None is returned when the newest email body has no token."""
+        start = _start()
+        mailbox._connection = MagicMock()
 
-        assert token == "123456"
-        row.click.assert_awaited_once()
+        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
+             patch.object(mailbox, "_search_uids", return_value=[b"1"]), \
+             patch.object(mailbox, "_fetch_message", return_value=("data",)), \
+             patch.object(mailbox, "_parse_message", return_value=_message(
+                 "1", body="No code here."
+             )):
+            result = mailbox._poll_once("CMP - YOUR TOKEN", start)
+
+        assert result is None
+
+    def test_skips_messages_at_or_below_uid_baseline(self, mailbox):
+        """Test that leftover messages from a previous run (UID <= baseline) are skipped."""
+        start = _start()
+        mailbox._connection = MagicMock()
+        mailbox._base_uid = 5
+
+        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
+             patch.object(mailbox, "_search_uids", return_value=[b"3", b"7"]), \
+             patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]) as mock_fetch, \
+             patch.object(mailbox, "_parse_message", side_effect=[
+                 _message("3"), _message("7"),
+             ]):
+            result = mailbox._poll_once("CMP - YOUR TOKEN", start)
+
+            # Only UID 7 (above baseline) is parsed and considered
+            assert result is not None
+            assert result.email_received_at == start
+            assert mock_fetch.call_count == 1
+
+    def test_raises_when_not_connected(self, mailbox):
+        """Test that polling raises when no IMAP connection exists."""
+        start = _start()
+        with pytest.raises(OTPError, match="not established"):
+            mailbox._poll_once("CMP - YOUR TOKEN", start)
+
+
+class TestConnectAndDisconnect:
+    """Tests for IMAP connection lifecycle."""
 
     @pytest.mark.asyncio
-    async def test_returns_none_when_body_has_no_token(self, mailbox):
-        """Test that None is returned when the email body has no token."""
-        page = AsyncMock()
-        row = AsyncMock()
-        locator_mock = MagicMock()
-        locator_mock.nth.return_value = row
-        page.locator = MagicMock(return_value=locator_mock)
-        candidate = _EmailCandidate(
-            email_subject="CMP - YOUR TOKEN",
-            email_received_at=_start(),
-            list_selector=".email-item",
-            row_identity="msg-id-1",
+    async def test_connect_success(self, mailbox, config):
+        """Test a successful IMAP connect with login and read-only select."""
+        mock_conn = MagicMock()
+        mock_conn.select.return_value = ("OK", [])
+        with patch("cmp_automation.mailbox.imaplib.IMAP4_SSL", return_value=mock_conn) as mock_ssl, \
+             patch.object(mailbox, "_take_uid_snapshot", new=MagicMock()) as mock_snapshot:
+            await mailbox.connect()
+
+        mock_ssl.assert_called_once_with(
+            config.gmf_imap_host, config.gmf_imap_port, timeout=mailbox.IMAP_TIMEOUT_SECONDS
         )
-
-        with patch.object(mailbox, "_read_email_body", new=AsyncMock(return_value="No code here.")), \
-             patch.object(mailbox, "_locate_row_by_identity", new=AsyncMock(return_value=row)), \
-             patch.object(mailbox, "_wait_for_email_body", new=AsyncMock()), \
-             patch.object(mailbox, "_read_email_sender", new=AsyncMock(return_value=None)), \
-             patch.object(mailbox, "_read_row_metadata", new=AsyncMock(return_value=("CMP - YOUR TOKEN", "2024-01-15 12:00:00", "msg-id-1"))):
-            token = await mailbox._open_email_and_extract_token(page, candidate)
-
-        assert token is None
-
-
-class TestEnsureAuthenticated:
-    """Tests for webmail session handling."""
+        mock_conn.login.assert_called_once_with(config.gmf_email, config.gmf_password)
+        mock_conn.select.assert_called_once_with("INBOX", readonly=True)
+        mock_snapshot.assert_called_once()
+        assert mailbox._connection is mock_conn
 
     @pytest.mark.asyncio
-    async def test_skips_login_when_session_valid(self, mailbox):
-        """Test that login is skipped when the session is already authenticated with correct account."""
-        page = AsyncMock()
-        fake_locator = _FakeLocator(count_value=1)
-        fake_locator.set_attribute("data-user-email", "test@test.com")
-        page.locator = MagicMock(return_value=fake_locator)
+    async def test_connect_login_failure(self, mailbox):
+        """Test that a login failure raises a safe OTPError and closes the connection."""
+        mock_conn = MagicMock()
+        mock_conn.login.side_effect = Exception("auth failed")
+        with patch("cmp_automation.mailbox.imaplib.IMAP4_SSL", return_value=mock_conn):
+            with pytest.raises(OTPError, match="IMAP connection failed"):
+                await mailbox.connect()
 
-        with patch.object(mailbox, "_login", new=AsyncMock()) as mock_login:
-            await mailbox.ensure_authenticated(page)
-
-        mock_login.assert_not_awaited()
-        assert mailbox._authenticated is True
-
-    @pytest.mark.asyncio
-    async def test_logs_in_when_session_invalid(self, mailbox):
-        """Test that login is performed when no session indicator is present."""
-        page = AsyncMock()
-        fake_locator = _FakeLocator(count_value=0)
-        page.locator = MagicMock(return_value=fake_locator)
-
-        with patch.object(mailbox, "_login", new=AsyncMock()), \
-             patch.object(mailbox, "_verify_account_identity", new=AsyncMock(return_value=True)):
-            await mailbox.ensure_authenticated(page)
-
-        assert mailbox._authenticated is True
+        assert mailbox._connection is None
+        mock_conn.close.assert_called_once()
+        mock_conn.logout.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_rejects_wrong_account(self, mailbox):
-        """Test that login is performed when account indicator shows wrong email."""
-        page = AsyncMock()
-        fake_locator = _FakeLocator(count_value=1)
-        fake_locator.set_attribute("data-user-email", "wrong@test.com")
-        page.locator = MagicMock(return_value=fake_locator)
+    async def test_connect_select_failure(self, mailbox):
+        """Test that a failed mailbox select raises OTPError and closes the connection."""
+        mock_conn = MagicMock()
+        mock_conn.select.return_value = ("NO", ["Mailbox does not exist"])
+        with patch("cmp_automation.mailbox.imaplib.IMAP4_SSL", return_value=mock_conn):
+            with pytest.raises(OTPError, match="select INBOX"):
+                await mailbox.connect()
 
-        with patch.object(mailbox, "_login", new=AsyncMock()) as mock_login:
-            with pytest.raises(Exception, match="Account verification failed"):
-                await mailbox.ensure_authenticated(page)
-
-        mock_login.assert_awaited_once_with(page)
+        assert mailbox._connection is None
+        mock_conn.close.assert_called_once()
+        mock_conn.logout.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_rechecks_cached_session_identity(self, mailbox):
-        """Cached sessions still require account identity verification."""
-        mailbox._authenticated = True
-        page = AsyncMock()
-        with patch.object(mailbox, "_verify_account_identity", new=AsyncMock(return_value=True)):
-            await mailbox.ensure_authenticated(page)
-        page.goto.assert_awaited_once()
-        assert mailbox._authenticated is True
+    async def test_disconnect_closes_and_logs_out(self, mailbox):
+        """Test that disconnect closes and logs out of the connection."""
+        mock_conn = MagicMock()
+        mailbox._connection = mock_conn
+        await mailbox.disconnect()
+
+        mock_conn.close.assert_called_once()
+        mock_conn.logout.assert_called_once()
+        assert mailbox._connection is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_without_connection_is_noop(self, mailbox):
+        """Test that disconnect is a no-op when never connected."""
+        await mailbox.disconnect()  # Should not raise
+        assert mailbox._connection is None
 
 
 class TestParseEmailTimestamp:
@@ -445,6 +337,14 @@ class TestParseEmailTimestamp:
         assert parsed.tzinfo == ZoneInfo("UTC")
         assert parsed.hour == 12
 
+    def test_parse_imap_internaldate_format(self, mailbox):
+        """Test parsing the IMAP INTERNALDATE format."""
+        parsed = mailbox.parse_email_timestamp("15-Jan-2024 12:00:00 +0700")
+        assert parsed is not None
+        assert parsed.tzinfo is not None
+        assert parsed.utcoffset() == timedelta(hours=7)
+        assert parsed.hour == 12
+
     def test_parse_with_gmt_offset(self, mailbox):
         """Test parsing with GMT+7 offset."""
         parsed = mailbox.parse_email_timestamp("2024-01-15 12:00:00 GMT+7")
@@ -455,32 +355,7 @@ class TestParseEmailTimestamp:
         """Test that unparseable timestamps return None."""
         assert mailbox.parse_email_timestamp("not-a-timestamp") is None
         assert mailbox.parse_email_timestamp("") is None
-        assert mailbox.parse_email_timestamp(None) is None
-
-    def test_parse_missing_timestamp_returns_none(self, mailbox):
-        """Test that missing/empty timestamp returns None (fail closed)."""
-        assert mailbox.parse_email_timestamp("") is None
-        assert mailbox.parse_email_timestamp("   ") is None
-
-    def test_timezone_aware_comparison(self, mailbox):
-        """Test that timestamps are compared with timezone awareness."""
-        jakarta_tz = ZoneInfo("Asia/Jakarta")
-        utc_tz = ZoneInfo("UTC")
-
-        start_time = datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz)
-
-        email_old = datetime(2024, 1, 15, 11, 59, 0, tzinfo=jakarta_tz)
-        assert email_old < start_time
-
-        email_at_start = datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz)
-        assert email_at_start >= start_time
-
-        email_new = datetime(2024, 1, 15, 12, 1, 0, tzinfo=jakarta_tz)
-        assert email_new >= start_time
-
-        email_utc = datetime(2024, 1, 15, 5, 0, 0, tzinfo=utc_tz)  # 12:00 Jakarta = 05:00 UTC
-        email_utc_normalized = email_utc.astimezone(jakarta_tz)
-        assert email_utc_normalized >= start_time
+        assert mailbox.parse_email_timestamp(None) is None  # type: ignore[arg-type]
 
 
 class TestWorkflowStartTime:

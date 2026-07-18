@@ -6,7 +6,7 @@ Production-ready automation tool for the Telkomsel CMP Portal.
 
 - **Firefox-only** automation (Chromium blocked by firewall)
 - **Persistent Firefox profile** for session reuse
-- **OTP retrieval** from GMF Webmail with timestamp validation
+- **OTP retrieval** via direct IMAP (imaplib) with timestamp validation — no webmail UI scraping
 - **Products export** to XLSX with sorting
 - **Dashboard screenshot** capture and embedding
 - **Excel report generation** with embedded dashboard image
@@ -52,8 +52,10 @@ Required environment variables:
 |----------|-------------|
 | `CMP_USERNAME` | CMP Portal username |
 | `CMP_PASSWORD` | CMP Portal password |
-| `GMF_EMAIL` | GMF Webmail email |
-| `GMF_PASSWORD` | GMF Webmail password |
+| `GMF_EMAIL` | GMF mailbox email (IMAP login) |
+| `GMF_PASSWORD` | GMF mailbox password |
+| `GMF_IMAP_HOST` | GMF IMAP server host (default: `mail.gmf-aeroasia.co.id`) |
+| `GMF_IMAP_PORT` | GMF IMAP server port (default: `993`) |
 | `FIREFOX_PROFILE_DIR` | Path to persistent Firefox profile |
 | `DOWNLOAD_DIR` | Directory for downloads |
 | `OTP_TIMEOUT_SECONDS` | OTP polling timeout (default: 120) |

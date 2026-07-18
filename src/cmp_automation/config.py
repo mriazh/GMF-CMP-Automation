@@ -24,9 +24,17 @@ class Config(BaseSettings):
     cmp_username: str = Field(..., description="CMP Portal username")
     cmp_password: str = Field(..., description="CMP Portal password")
 
-    # GMF Webmail Credentials
-    gmf_email: str = Field(..., description="GMF Webmail email address")
-    gmf_password: str = Field(..., description="GMF Webmail password")
+    # GMF Mailbox Credentials (used for direct IMAP OTP retrieval)
+    gmf_email: str = Field(..., description="GMF mailbox email address")
+    gmf_password: str = Field(..., description="GMF mailbox password")
+
+    # GMF IMAP Configuration
+    gmf_imap_host: str = Field(
+        default="mail.gmf-aeroasia.co.id", description="GMF IMAP server host"
+    )
+    gmf_imap_port: int = Field(
+        default=993, ge=1, le=65535, description="GMF IMAP server port"
+    )
 
     # Firefox Configuration
     firefox_profile_dir: Path = Field(..., description="Path to persistent Firefox profile directory")
@@ -46,7 +54,6 @@ class Config(BaseSettings):
     )
     cmp_products_url: str = Field(default="https://ep.iotcc.telkomsel.com/#!products", description="CMP Products page URL")
     cmp_dashboard_url: str = Field(default="https://ep.iotcc.telkomsel.com/#!dashboard", description="CMP Dashboard page URL")
-    gmf_webmail_url: str = Field(default="https://mail.gmf-aeroasia.co.id/", description="GMF Webmail URL")
 
     # OTP Email subject
     otp_email_subject: str = Field(default="CMP - YOUR TOKEN", description="Exact subject of OTP email")
@@ -59,20 +66,25 @@ class Config(BaseSettings):
             v = Path(v)
         return v.expanduser().resolve()
 
-    @field_validator("cmp_login_url", "cmp_products_url", "cmp_dashboard_url", "gmf_webmail_url")
+    @field_validator("cmp_login_url", "cmp_products_url", "cmp_dashboard_url")
     @classmethod
     def validate_url(cls, v: str) -> str:
-        """Allow only the approved HTTPS CMP and GMF hosts."""
+        """Allow only the approved HTTPS CMP host."""
         parsed = urlparse(v)
-        allowed_hosts = {
-            "ep.iotcc.telkomsel.com",
-            "mail.gmf-aeroasia.co.id",
-        }
+        allowed_hosts = {"ep.iotcc.telkomsel.com"}
         if parsed.scheme != "https" or parsed.hostname not in allowed_hosts:
             raise ValueError("Configured URL must use HTTPS and an approved host")
         if parsed.port is not None or parsed.username or parsed.password:
             raise ValueError("Configured URL must not contain credentials or a port")
         return v
+
+    @field_validator("gmf_imap_host")
+    @classmethod
+    def validate_imap_host(cls, v: str) -> str:
+        """IMAP host must not be empty."""
+        if not v or not v.strip():
+            raise ValueError("IMAP host must not be empty")
+        return v.strip()
 
     @field_validator("timezone")
     @classmethod

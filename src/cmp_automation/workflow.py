@@ -69,6 +69,9 @@ class CMPAutomationWorkflow:
             except Exception as e:
                 logger.exception("Unexpected error in workflow")
                 raise CMPAutomationError("Workflow failed unexpectedly", str(e)) from e
+            finally:
+                # Always release the IMAP connection (no-op if never connected)
+                await self.mailbox.disconnect()
 
     async def _dry_run(self) -> Path:
         """Perform a dry run - verify configuration and browser launch without login."""

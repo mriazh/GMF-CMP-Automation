@@ -9,6 +9,7 @@ from cmp_automation.cmp_login import CMPLogin
 from cmp_automation.config import Config
 from cmp_automation.dashboard import DashboardCapture
 from cmp_automation.excel_report import ExcelReportGenerator
+from cmp_automation.mailbox import MailboxClient
 from cmp_automation.products import ProductsExporter
 from cmp_automation.workflow import CMPAutomationWorkflow, run_workflow
 
@@ -71,6 +72,27 @@ class TestWorkflow:
             mock_excel.assert_called_once()
 
             assert result == Path("/tmp/final_report.xlsx")
+
+    @pytest.mark.asyncio
+    async def test_run_workflow_disconnects_mailbox(self, config):
+        """Test that the workflow releases the IMAP connection after the run."""
+        with patch("cmp_automation.workflow.browser_context") as mock_browser_context, \
+             patch.object(CMPLogin, "login"), \
+             patch.object(ProductsExporter, "export_products"), \
+             patch.object(DashboardCapture, "capture_dashboard"), \
+             patch.object(ExcelReportGenerator, "generate_report") as mock_excel, \
+             patch.object(MailboxClient, "disconnect", new=AsyncMock()) as mock_disconnect:
+
+            mock_manager = AsyncMock()
+            mock_page = AsyncMock()
+            mock_manager.new_page.return_value = mock_page
+            mock_browser_context.return_value.__aenter__.return_value = mock_manager
+            mock_excel.return_value = Path("/tmp/final_report.xlsx")
+
+            workflow = CMPAutomationWorkflow(config, dry_run=False)
+            await workflow.run()
+
+            mock_disconnect.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_run_workflow_handles_errors(self, config):

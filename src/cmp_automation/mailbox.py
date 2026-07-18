@@ -1,14 +1,23 @@
-"""GMF Webmail client for OTP retrieval."""
+"""IMAP-based GMF mailbox client for OTP retrieval.
+
+Replaces the previous Playwright webmail UI scraping approach with a direct
+IMAP client (proven pattern from ``GMF-CMP-Monitor``). Connects via IMAPS
+(``imaplib.IMAP4_SSL``) to the GMF mailbox, polls for OTP emails matching the
+exact subject, and accepts only messages received at/after the workflow start
+timestamp.
+"""
 
 import asyncio
+import email
+import email.utils
+import imaplib
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone, tzinfo
-from time import monotonic
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
+from email.header import decode_header
+from typing import Any
 from zoneinfo import ZoneInfo
-
-from playwright.async_api import Locator, Page
 
 from .config import Config
 from .exceptions import OTPError, OTPTimeoutError
@@ -28,117 +37,33 @@ class OTPToken:
 
 
 @dataclass
-class _EmailCandidate:
-    """Internal candidate email found in the inbox list."""
+class _OtpMessage:
+    """Internal candidate message fetched from the IMAP server."""
 
-    email_subject: str
-    email_received_at: datetime
-    list_selector: str
-    row_identity: str  # Stable row identity (message-id, href, data-id, etc.)
+    uid: str
+    subject: str
+    received_at: datetime
+    body: str
 
 
 class MailboxClient:
-    """Client for interacting with GMF Webmail to retrieve OTP emails."""
+    """IMAP client for retrieving OTP emails from the GMF mailbox.
 
-    # Selectors for webmail login - GMF MDaemon specific
-    LOGIN_EMAIL_SELECTORS = [
-        "input#User",
-        'input[name="username"]',
-        'input[id="username"]',
-        'input[type="email"]',
-        'input[placeholder*="Email" i]',
-    ]
-    LOGIN_PASSWORD_SELECTORS = [
-        "input#Password",
-        'input[name="password"]',
-        'input[id="password"]',
-        'input[type="password"]',
-    ]
-    LOGIN_SUBMIT_SELECTORS = [
-        "button#Logon",
-        'button[type="submit"]',
-        'input[type="submit"]',
-        'button:has-text("Login")',
-        'button:has-text("Sign In")',
-        'button:has-text("Masuk")',
-    ]
+    Uses IMAPS with mandatory TLS. The mailbox is opened read-only; no
+    message is ever modified or marked as seen.
+    """
 
-    # Selectors for email list
-    EMAIL_LIST_SELECTORS = [
-        ".email-list .email-item",
-        ".message-list .message-item",
-        "tr[data-message-id]",
-        "tr[data-id]",
-        ".email-row",
-        "tbody tr",
-    ]
-
-    # Selectors for email subject in list view
-    EMAIL_SUBJECT_SELECTORS = [
-        "[data-subject]",
-        ".email-subject",
-        ".message-subject",
-        "td.subject",
-        "th.subject",
-        '[aria-label*="Subject" i]',
-        'td:has-text("Subject") + td',
-    ]
-
-    # Selectors for email timestamp in list view
-    EMAIL_TIMESTAMP_SELECTORS = [
-        "[data-timestamp]",
-        "[data-received]",
-        ".email-date",
-        ".message-date",
-        ".email-time",
-        ".message-time",
-        "td.date",
-        "td.time",
-        '[aria-label*="Date" i]',
-        '[aria-label*="Time" i]',
-        '[title*="202"]',  # Year in title attribute
-    ]
-
-    # Selectors for email body in detail view
-    EMAIL_BODY_SELECTORS = [
-        "[data-body]",
-        ".email-body",
-        ".message-body",
-        ".email-content",
-        ".message-content",
-        "#message-body",
-        ".mail-body",
-        '[role="main"] .content',
-    ]
-
-    # Selectors for sender information
-    EMAIL_SENDER_SELECTORS = [
-        "[data-sender]",
-        "[data-from]",
-        ".email-from",
-        ".message-from",
-        ".sender",
-        "td.from",
-        '[aria-label*="From" i]',
-    ]
-
-    # Account verification selectors (post-login)
-    ACCOUNT_INDICATOR_SELECTORS = [
-        "[data-user-email]",
-        "[data-account-email]",
-        ".user-email",
-        ".account-email",
-        ".user-info .email",
-        "#user-email",
-        '[aria-label*="Account" i]',
-        ".user-menu .email",
-    ]
+    IMAP_TIMEOUT_SECONDS = 30
 
     def __init__(self, config: Config):
         self.config = config
-        self._authenticated = False
+        self._connection: imaplib.IMAP4_SSL | None = None
         self._workflow_start_time: datetime | None = None
-        self._poll_start_monotonic: float | None = None
+        self._base_uid = 0
+
+    # ------------------------------------------------------------------
+    # Workflow start time handling
+    # ------------------------------------------------------------------
 
     def set_workflow_start_time(self, start_time: datetime) -> None:
         """Set the workflow start time for OTP freshness validation.
@@ -159,149 +84,104 @@ class MailboxClient:
             )
         return self._workflow_start_time
 
-    def _start_poll_timer(self) -> None:
-        """Start the monotonic timer for polling timeout."""
-        self._poll_start_monotonic = monotonic()
+    # ------------------------------------------------------------------
+    # Connection lifecycle (async wrappers over blocking IMAP calls)
+    # ------------------------------------------------------------------
 
-    def _check_poll_timeout(self, timeout_seconds: int) -> bool:
-        """Check if the polling timeout has been exceeded using monotonic clock."""
-        if self._poll_start_monotonic is None:
-            return False
-        return (monotonic() - self._poll_start_monotonic) >= timeout_seconds
+    async def connect(self) -> None:
+        """Connect and authenticate to the IMAP server (async wrapper)."""
+        await asyncio.to_thread(self._connect_sync)
 
-    async def ensure_authenticated(self, page: Page) -> None:
-        """Ensure webmail is authenticated and verify the correct account."""
-        logger.debug("Checking webmail authentication status")
+    def _connect_sync(self) -> None:
+        """Connect, login, and select the INBOX read-only."""
+        if self._connection is not None:
+            return
+        host = self.config.gmf_imap_host
+        port = self.config.gmf_imap_port
+        logger.info("Connecting to GMF IMAP %s:%s (IMAPS)", host, port)
+        conn: imaplib.IMAP4_SSL | None = None
         try:
-            await page.goto(self.config.gmf_webmail_url, wait_until="networkidle")
-
-            # Check if already logged in - verify account identity
-            if await self._verify_account_identity(page):
-                logger.debug("Webmail session already authenticated with correct account")
-                self._authenticated = True
-                return
-
-            # Need to login
-            await self._login(page)
-
-            # Verify account after login
-            if not await self._verify_account_identity(page):
-                raise OTPError(
-                    "Account verification failed after login - cannot confirm correct mailbox"
-                )
-
-            self._authenticated = True
+            conn = imaplib.IMAP4_SSL(host, port, timeout=self.IMAP_TIMEOUT_SECONDS)
+            conn.login(self.config.gmf_email, self.config.gmf_password)
+            status, _ = conn.select("INBOX", readonly=True)
+            if status != "OK":
+                raise OTPError("Failed to select INBOX mailbox")
+            self._connection = conn
+            # Snapshot the highest UID at connect time (before authentication)
+            # so that stale OTP emails from a previous run are never accepted.
+            self._base_uid = 0
+            self._take_uid_snapshot()
+            logger.info("Connected to GMF IMAP mailbox (read-only)")
         except OTPError:
+            self._close_connection(conn)
             raise
-        except Exception as e:
-            raise OTPError("Failed to authenticate to webmail", str(e)) from e
+        except Exception as exc:
+            self._close_connection(conn)
+            logger.warning("IMAP connection failed: %s", type(exc).__name__)
+            raise OTPError("IMAP connection failed") from exc
 
-    async def _verify_account_identity(self, page: Page) -> bool:
-        """Verify that the displayed account matches the configured GMF_EMAIL.
+    @staticmethod
+    def _close_connection(conn: imaplib.IMAP4_SSL | None) -> None:
+        """Best-effort close of a partially established IMAP connection."""
+        if conn is None:
+            return
+        try:
+            conn.close()
+        except Exception:
+            pass
+        try:
+            conn.logout()
+        except Exception:
+            pass
 
-        Returns True if the account matches, False if indicator not found or mismatch.
-        """
-        gmf_email_lower = self.config.gmf_email.lower()
-        for selector in self.ACCOUNT_INDICATOR_SELECTORS:
-            try:
-                element = page.locator(selector).first
-                if await element.count() > 0:
-                    # Try to get email from various attributes
-                    displayed_email = None
-                    for attr in [
-                        "data-user-email",
-                        "data-account-email",
-                        "data-email",
-                        "title",
-                        "aria-label",
-                    ]:
-                        try:
-                            displayed_email = await element.get_attribute(attr)
-                            if displayed_email:
-                                break
-                        except Exception:
-                            continue
+    def _take_uid_snapshot(self) -> None:
+        """Record the highest UID matching the OTP criteria at connect time."""
+        try:
+            since = self._since_cutoff_date(datetime.now(UTC))
+            max_uid = 0
+            for raw_uid in self._search_uids(since):
+                try:
+                    max_uid = max(max_uid, int(raw_uid))
+                except (TypeError, ValueError):
+                    continue
+            self._base_uid = max_uid
+            logger.debug("IMAP UID snapshot at connect: %s", self._base_uid)
+        except Exception as exc:
+            logger.warning("Failed to take UID snapshot: %s", exc)
+            self._base_uid = 0
 
-                    # Fallback to inner text
-                    if not displayed_email:
-                        try:
-                            displayed_email = await element.inner_text()
-                        except Exception:
-                            continue
+    async def disconnect(self) -> None:
+        """Close and log out of the IMAP connection (async wrapper)."""
+        await asyncio.to_thread(self._disconnect_sync)
 
-                    if displayed_email:
-                        displayed_email = displayed_email.strip().lower()
-                        if displayed_email == gmf_email_lower:
-                            logger.debug("Verified account identity: %s", displayed_email)
-                            return True
-                        else:
-                            logger.warning(
-                                "Account mismatch: expected %s, found %s",
-                                self.config.gmf_email,
-                                displayed_email,
-                            )
-                            return False
-            except Exception:
-                continue
+    def _disconnect_sync(self) -> None:
+        """Close and log out of the IMAP connection, if connected."""
+        if self._connection is None:
+            return
+        conn = self._connection
+        self._connection = None
+        try:
+            conn.close()
+        except Exception:
+            logger.warning("Error during IMAP close")
+        try:
+            conn.logout()
+        except Exception:
+            logger.warning("Error during IMAP logout")
 
-        logger.debug("Account indicator not found in DOM")
-        return False
-
-    async def _login(self, page: Page) -> None:
-        """Login to GMF webmail using stable selectors with fallbacks."""
-        logger.debug("Logging into GMF webmail")
-
-        email_filled = await self._try_fill(
-            page, self.LOGIN_EMAIL_SELECTORS, self.config.gmf_email, "email"
-        )
-        if not email_filled:
-            raise OTPError("Could not find email input field on webmail login")
-
-        password_filled = await self._try_fill(
-            page, self.LOGIN_PASSWORD_SELECTORS, self.config.gmf_password, "password"
-        )
-        if not password_filled:
-            raise OTPError("Could not find password input field on webmail login")
-
-        for selector in self.LOGIN_SUBMIT_SELECTORS:
-            try:
-                button = page.locator(selector).first
-                if await button.count() > 0:
-                    await button.click()
-                    logger.debug("Clicked webmail login button using selector: %s", selector)
-                    # Wait for navigation or inbox to load
-                    await page.wait_for_load_state("networkidle", timeout=30000)
-                    return
-            except Exception:
-                continue
-        raise OTPError("Could not find or click webmail login button")
-
-    async def _try_fill(
-        self, page: Page, selectors: list[str], value: str, field_name: str
-    ) -> bool:
-        """Try to fill a field using multiple selector fallbacks."""
-        for selector in selectors:
-            try:
-                element = page.locator(selector).first
-                if await element.count() > 0:
-                    await element.fill(value)
-                    logger.debug("Filled webmail %s using selector: %s", field_name, selector)
-                    return True
-            except Exception:
-                continue
-        return False
+    # ------------------------------------------------------------------
+    # IMAP polling
+    # ------------------------------------------------------------------
 
     async def get_latest_otp(
         self,
-        page: Page,
         subject: str,
         timeout_seconds: int,
         poll_interval_seconds: int,
     ) -> OTPToken:
-        """Poll for the latest OTP email matching criteria.
+        """Poll for the latest OTP email matching the criteria.
 
         Args:
-            page: Playwright page for webmail
             subject: Expected email subject (case-insensitive exact match)
             timeout_seconds: Maximum time to poll (monotonic clock)
             poll_interval_seconds: Interval between poll attempts
@@ -313,373 +193,246 @@ class MailboxClient:
             OTPTimeoutError: If no valid OTP found within timeout
             OTPError: On other failures
         """
-        logger.info("Starting OTP polling for subject: %s", subject)
+        workflow_start = self._get_workflow_start_time()
+        logger.info("Starting IMAP OTP polling for subject: %s", subject)
 
-        if self._workflow_start_time is None:
-            raise OTPError(
-                "Workflow start time not set. Call set_workflow_start_time() before polling."
-            )
-        self._start_poll_timer()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout_seconds
 
-        await self.ensure_authenticated(page)
-
-        async def poll_once() -> OTPToken | None:
-            return await self._find_latest_otp(page, subject)
-
-        # Initial attempt
-        result = await poll_once()
-        if result:
-            return result
-
-        # Poll with monotonic timeout
-        while not self._check_poll_timeout(timeout_seconds):
-            await asyncio.sleep(poll_interval_seconds)
-            result = await poll_once()
-            if result:
+        while True:
+            if self._connection is None:
+                await self.connect()
+            result = await asyncio.to_thread(self._poll_once, subject, workflow_start)
+            if result is not None:
+                logger.info(
+                    "OTP retrieved successfully (email received at %s)",
+                    result.email_received_at.isoformat(),
+                )
                 return result
+            if loop.time() >= deadline:
+                raise OTPTimeoutError(
+                    f"OTP polling timed out after {timeout_seconds}s for subject '{subject}' "
+                    f"(workflow started at {workflow_start.isoformat()})"
+                )
+            await asyncio.sleep(poll_interval_seconds)
 
-        raise OTPTimeoutError(
-            f"OTP polling timed out after {timeout_seconds}s for subject '{subject}' "
-            f"(workflow started at {self._workflow_start_time.isoformat()})"
+    def _poll_once(self, subject: str, workflow_start: datetime) -> OTPToken | None:
+        """Perform one IMAP search/fetch cycle and return the newest valid OTP.
+
+        Accepts only messages whose subject matches (case-insensitive) and whose
+        received time is at/after the workflow start timestamp.
+        """
+        if self._connection is None:
+            raise OTPError("IMAP connection not established")
+
+        since = self._since_cutoff_date(workflow_start)
+
+        try:
+            self._refresh_mailbox()
+            raw_uids = self._search_uids(since)
+        except (imaplib.IMAP4.abort, imaplib.IMAP4.error, OSError) as exc:
+            logger.warning("IMAP error during polling: %s", type(exc).__name__)
+            raise OTPError("IMAP polling failed") from exc
+
+        messages: list[_OtpMessage] = []
+        for raw_uid in raw_uids:
+            uid = raw_uid.decode() if isinstance(raw_uid, bytes) else str(raw_uid)
+            try:
+                if int(uid) <= self._base_uid:
+                    # Leftover message from a previous run - reject.
+                    continue
+            except (TypeError, ValueError):
+                pass
+            fetch_data = self._fetch_message(uid)
+            if fetch_data:
+                message = self._parse_message(uid, fetch_data)
+                if message:
+                    messages.append(message)
+
+        valid = [
+            message
+            for message in messages
+            if message.subject.strip().lower() == subject.strip().lower()
+            and message.received_at >= workflow_start
+        ]
+        if not valid:
+            logger.debug(
+                "No valid OTP message found (polled %d candidate(s))", len(messages)
+            )
+            return None
+
+        newest = max(valid, key=lambda message: message.received_at)
+        token = extract_token_from_email_body(newest.body)
+        if token is None:
+            logger.debug("No token found in newest OTP message UID %s", newest.uid)
+            return None
+
+        return OTPToken(
+            token=token,
+            email_subject=newest.subject,
+            email_received_at=newest.received_at,
+            email_body_preview=newest.body[:200],
         )
 
-    async def _navigate_to_inbox(self, page: Page) -> None:
-        """Navigate to the webmail inbox list."""
+    def _refresh_mailbox(self) -> None:
+        """Refresh the mailbox view with NOOP so new emails are visible."""
+        if self._connection is None:
+            raise OTPError("IMAP connection not established")
         try:
-            await page.goto(self.config.gmf_webmail_url, wait_until="networkidle")
-        except Exception as e:
-            raise OTPError("Failed to navigate to the GMF inbox") from e
-
-    async def _find_latest_otp(self, page: Page, subject: str) -> OTPToken | None:
-        """Find the newest OTP email matching subject and time criteria."""
-        logger.debug("Searching for OTP email with subject: %s", subject)
-
-        await self._navigate_to_inbox(page)
-        candidates = await self._collect_email_candidates(page, subject)
-        if not candidates:
-            logger.debug("No matching OTP email found in inbox")
-            return None
-
-        # Try newest first; the token may be absent until the email is opened.
-        candidates.sort(key=lambda c: c.email_received_at, reverse=True)
-        for candidate in candidates:
-            token = await self._open_email_and_extract_token(page, candidate)
-            if token:
-                logger.info(
-                    "Selected OTP email received at %s",
-                    candidate.email_received_at.isoformat(),
-                )
-                return OTPToken(
-                    token=token,
-                    email_subject=candidate.email_subject,
-                    email_received_at=candidate.email_received_at,
-                    email_body_preview="",
-                )
-            # Re-navigate to inbox before trying next candidate
-            await self._navigate_to_inbox(page)
-        return None
-
-    async def _collect_email_candidates(
-        self,
-        page: Page,
-        subject: str,
-    ) -> list[_EmailCandidate]:
-        """Collect inbox rows matching the subject and received-at criteria."""
-        candidates: list[_EmailCandidate] = []
-
-        for list_selector in self.EMAIL_LIST_SELECTORS:
-            rows = page.locator(list_selector)
-            try:
-                count = await rows.count()
-            except Exception:
-                continue
-            if count == 0:
-                continue
-
-            for i in range(count):
-                row = rows.nth(i)
-                metadata = await self._read_row_metadata(row)
-                if metadata is None:
-                    continue
-                row_subject, ts_text, row_identity = metadata
-
-                if row_subject.strip().lower() != subject.strip().lower():
-                    continue
-
-                if ts_text is None or ts_text.strip() == "":
-                    logger.debug("Rejecting email at row %d: missing timestamp", i)
-                    continue
-
-                parsed = self.parse_email_timestamp(ts_text)
-                if parsed is None:
-                    logger.debug("Rejecting email at row %d: unparsable timestamp '%s'", i, ts_text)
-                    continue
-
-                received_at = parsed
-
-                # Ensure timezone-aware and normalize to workflow timezone
-                if received_at.tzinfo is None:
-                    logger.debug(
-                        "Rejecting email at row %d: timestamp not timezone-aware after parsing", i
-                    )
-                    continue
-
-                workflow_tz = self.config.get_timezone()
-                if received_at.tzinfo != workflow_tz:
-                    received_at = received_at.astimezone(workflow_tz)
-
-                workflow_start = self._get_workflow_start_time()
-                if received_at < workflow_start:
-                    logger.debug(
-                        "Rejecting older email received at %s (workflow start: %s)",
-                        received_at.isoformat(),
-                        workflow_start.isoformat(),
-                    )
-                    continue
-
-                candidates.append(
-                    _EmailCandidate(
-                        email_subject=row_subject.strip(),
-                        email_received_at=received_at,
-                        list_selector=list_selector,
-                        row_identity=row_identity,
-                    )
-                )
-
-            if candidates:
-                break
-        return candidates
-
-    async def _read_row_metadata(self, row: Locator) -> tuple[str, str | None, str] | None:
-        """Read subject, timestamp text, and stable row identity from an inbox row.
-
-        Returns tuple of (subject_text, timestamp_text_or_none, row_identity) or None if row unusable.
-        Row identity is a stable identifier like message-id, href, or data-id.
-        """
-        try:
-            # Read subject - try data attribute first, then visible text
-            subject_text = await self._get_row_attribute_or_text(
-                row, self.EMAIL_SUBJECT_SELECTORS, "data-subject"
-            )
-            if not subject_text or not subject_text.strip():
-                return None
-
-            # Read timestamp - try data attribute first, then visible text
-            ts_text = await self._get_row_attribute_or_text(
-                row, self.EMAIL_TIMESTAMP_SELECTORS, "data-timestamp"
-            )
-
-            # Get stable row identity
-            row_identity = await self._get_row_identity(row)
-            if not row_identity:
-                # Fallback: use subject + timestamp as quasi-identity
-                row_identity = f"{subject_text.strip()}|{ts_text or 'no-timestamp'}"
-
-            return (subject_text.strip(), ts_text.strip() if ts_text else None, row_identity)
-        except Exception as e:
-            logger.debug("Failed to read row metadata: %s", e)
-            return None
-
-    async def _get_row_attribute_or_text(
-        self, row: Locator, selectors: list[str], attr_name: str
-    ) -> str | None:
-        """Get text from row using data attribute, aria-label, title, or inner_text."""
-        for selector in selectors:
-            try:
-                el = row.locator(selector).first
-                if await el.count() > 0:
-                    # Try data attribute first
-                    attr_value = await el.get_attribute(attr_name)
-                    if attr_value and attr_value.strip():
-                        return attr_value.strip()
-
-                    # Try other common attributes
-                    for attr in [
-                        "data-value",
-                        "title",
-                        "aria-label",
-                        "data-timestamp",
-                        "data-subject",
-                        "data-body",
-                    ]:
-                        attr_value = await el.get_attribute(attr)
-                        if attr_value and attr_value.strip():
-                            return attr_value.strip()
-
-                    # Fallback to inner text
-                    text = await el.inner_text()
-                    if text and text.strip():
-                        return text.strip()
-            except Exception:
-                continue
-        return None
-
-    async def _get_row_identity(self, row: Locator) -> str | None:
-        """Extract a stable identity for the row (message-id, data-id, href, etc.)."""
-        # Try common identity attributes on the row itself
-        for attr in ["data-message-id", "data-id", "data-uid", "id", "data-key"]:
-            try:
-                value = await row.get_attribute(attr)
-                if value and value.strip():
-                    return value.strip()
-            except Exception:
-                continue
-
-        # Try to find a link with href in the row
-        try:
-            link = row.locator("a[href]").first
-            if await link.count() > 0:
-                href = await link.get_attribute("href")
-                if href and href.strip():
-                    return href.strip()
+            self._connection.noop()
         except Exception:
-            pass
+            logger.warning("NOOP failed, re-selecting mailbox")
+            try:
+                status, _ = self._connection.select("INBOX", readonly=True)
+                if status != "OK":
+                    raise OTPError("Failed to re-select INBOX mailbox")
+            except OTPError:
+                raise
+            except Exception as exc:
+                raise OTPError("Failed to refresh IMAP mailbox") from exc
 
-        return None
+    def _search_uids(self, since_date: str) -> list[bytes]:
+        """Search for candidate UIDs with the OTP subject since the given date."""
+        if self._connection is None:
+            return []
+        criteria = f'(SINCE "{since_date}" HEADER Subject "{self.config.otp_email_subject}")'
+        status, data = self._connection.uid(
+            "search", None, criteria  # type: ignore[arg-type]  # imaplib accepts None charset
+        )
+        if status != "OK" or not data:
+            return []
+        uids = data[0]
+        if not isinstance(uids, bytes):
+            return []
+        return uids.split()
 
-    async def _open_email_and_extract_token(
-        self, page: Page, candidate: _EmailCandidate
-    ) -> str | None:
-        """Open an email row and extract the token from its body.
+    def _fetch_message(self, uid: str) -> list[Any] | None:
+        """Fetch a single message body (peek only - never marks as seen)."""
+        if self._connection is None:
+            return None
+        status, data = self._connection.uid("fetch", uid, "(INTERNALDATE BODY.PEEK[])")
+        if status != "OK":
+            return None
+        return data
 
-        Revalidates subject and timestamp before extracting to handle inbox changes.
-        """
+    # ------------------------------------------------------------------
+    # Message parsing
+    # ------------------------------------------------------------------
+
+    def _parse_message(self, uid: str, fetch_data: list[Any]) -> _OtpMessage | None:
+        """Parse raw IMAP fetch data into an _OtpMessage, or None on failure."""
         try:
-            # Re-locate the row using stable identity
-            row = await self._locate_row_by_identity(page, candidate)
-            if row is None:
-                logger.debug(
-                    "Could not re-locate candidate row with identity: %s", candidate.row_identity
-                )
+            raw_bytes = None
+            for item in fetch_data:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    raw_bytes = item[1]
+                    break
+            if not raw_bytes or not isinstance(raw_bytes, bytes):
                 return None
 
-            # Revalidate subject and timestamp before opening
-            metadata = await self._read_row_metadata(row)
-            if metadata is None:
-                logger.debug("Candidate row metadata no longer readable")
+            parsed = email.message_from_bytes(raw_bytes)
+            subject = self._decode_subject(parsed.get("Subject"))
+
+            received_at = self._extract_internal_date(fetch_data)
+            if received_at is None:
+                date_header = parsed.get("Date")
+                if date_header:
+                    try:
+                        received_at = email.utils.parsedate_to_datetime(date_header)
+                    except Exception:
+                        received_at = None
+
+            if received_at is None or received_at.tzinfo is None:
+                logger.warning("Message UID %s missing/invalid date, rejecting", uid)
                 return None
 
-            row_subject, ts_text, _ = metadata
-            if row_subject.strip().lower() != candidate.email_subject.strip().lower():
-                logger.debug("Candidate row subject changed, skipping")
-                return None
-
-            if ts_text:
-                parsed = self.parse_email_timestamp(ts_text)
-                if parsed is None:
-                    logger.debug("Candidate row timestamp became unparsable, skipping")
-                    return None
-                workflow_tz = self.config.get_timezone()
-                if parsed.tzinfo != workflow_tz:
-                    parsed = parsed.astimezone(workflow_tz)
-                if parsed != candidate.email_received_at:
-                    logger.debug("Candidate row timestamp changed, skipping")
-                    return None
-
-            # Open the email
-            await row.click()
-            # Wait for email detail view to render - wait for body selector
-            await self._wait_for_email_body(page)
-
-            body = await self._read_email_body(page)
-            if not body:
-                logger.debug("Email body empty or not found")
-                return None
-
-            # Extract sender if available
-            sender = await self._read_email_sender(page)
-
-            token = extract_token_from_email_body(body, sender)
-            return token
-        except Exception as e:
-            logger.debug("Failed to open email and extract token: %s", e)
+            body = self._extract_body(parsed)
+            return _OtpMessage(
+                uid=uid,
+                subject=subject,
+                received_at=received_at,
+                body=body,
+            )
+        except Exception as exc:
+            logger.warning("Failed to parse IMAP message UID %s: %s", uid, exc)
             return None
 
-    async def _locate_row_by_identity(
-        self, page: Page, candidate: _EmailCandidate
-    ) -> Locator | None:
-        """Locate a row by its stable identity."""
-        # Try to find row by data attribute matching the identity
-        for list_selector in self.EMAIL_LIST_SELECTORS:
-            try:
-                rows = page.locator(list_selector)
-                count = await rows.count()
-                for i in range(count):
-                    row = rows.nth(i)
-                    identity = await self._get_row_identity(row)
-                    if identity and identity == candidate.row_identity:
-                        return row
-            except Exception:
-                continue
+    def _extract_internal_date(self, fetch_data: list[Any]) -> datetime | None:
+        """Extract the INTERNALDATE from IMAP fetch data as an aware datetime."""
+        for item in fetch_data:
+            if isinstance(item, tuple) and len(item) >= 1:
+                header_line = item[0]
+                if not isinstance(header_line, bytes):
+                    header_line = str(header_line).encode("utf-8")
+                match = re.search(rb'INTERNALDATE\s+"([^"]+)"', header_line, re.IGNORECASE)
+                if match:
+                    date_str = match.group(1).decode("ascii", errors="replace")
+                    return self.parse_email_timestamp(date_str)
         return None
 
-    async def _wait_for_email_body(self, page: Page) -> None:
-        """Wait for email body to render in detail view."""
-        # Wait for at least one body selector to be visible with content
-        for selector in self.EMAIL_BODY_SELECTORS:
-            try:
-                el = page.locator(selector).first
-                await el.wait_for(state="visible", timeout=15000)
-                # Additional check: ensure it has some content
-                text = await el.inner_text()
-                if text and text.strip():
-                    return
-            except Exception:
-                continue
-        # Fallback: wait for network idle
-        await page.wait_for_load_state("networkidle", timeout=15000)
+    def _decode_subject(self, subject_raw: str | None) -> str:
+        """Decode an RFC 2047-encoded message subject."""
+        if not subject_raw:
+            return ""
+        decoded_parts = decode_header(subject_raw)
+        decoded = ""
+        for part, charset in decoded_parts:
+            if isinstance(part, bytes):
+                decoded += part.decode(charset or "utf-8", errors="replace")
+            else:
+                decoded += part
+        return decoded
 
-    async def _read_email_body(self, page: Page) -> str | None:
-        """Read the email body text using available selectors."""
-        for selector in self.EMAIL_BODY_SELECTORS:
-            try:
-                el = page.locator(selector).first
-                if await el.count() > 0:
-                    # Try data-body attribute first
-                    body = await el.get_attribute("data-body")
-                    if body and body.strip():
-                        return body.strip()
+    def _extract_body(self, msg: email.message.Message) -> str:
+        """Extract the plain-text (or HTML) body from a parsed message."""
+        plain_body = ""
+        html_body = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                if content_type == "text/plain" and not plain_body:
+                    payload = part.get_payload(decode=True)
+                    if isinstance(payload, bytes):
+                        plain_body = payload.decode("utf-8", errors="replace")
+                    else:
+                        plain_body = str(payload)
+                elif content_type == "text/html" and not html_body:
+                    payload = part.get_payload(decode=True)
+                    if isinstance(payload, bytes):
+                        html_body = payload.decode("utf-8", errors="replace")
+                    else:
+                        html_body = str(payload)
+            return plain_body if plain_body else html_body
+        payload = msg.get_payload(decode=True)
+        if isinstance(payload, bytes):
+            return payload.decode("utf-8", errors="replace")
+        return str(payload)
 
-                    # Try inner text
-                    body = await el.inner_text()
-                    if body and body.strip():
-                        return body.strip()
-            except Exception:
-                continue
+    def _since_cutoff_date(self, run_start: datetime) -> str:
+        """IMAP SINCE date covering the acceptance window.
 
-        # DO NOT fall back to page.body.inner_text() - that captures entire page including UI
-        return None
+        IMAP ``SINCE`` compares against the server's internal date (usually UTC),
+        so subtract a full day from the login timestamp to absorb timezone and
+        server-clock differences while keeping the candidate set small.
+        """
+        cutoff = run_start - timedelta(days=1)
+        return f"{cutoff.day}-{cutoff.strftime('%b')}-{cutoff.year}"
 
-    async def _read_email_sender(self, page: Page) -> str | None:
-        """Read sender information from email detail view."""
-        for selector in self.EMAIL_SENDER_SELECTORS:
-            try:
-                el = page.locator(selector).first
-                if await el.count() > 0:
-                    # Try data attributes first
-                    for attr in ["data-sender", "data-from", "data-email", "title", "aria-label"]:
-                        sender = await el.get_attribute(attr)
-                        if sender and sender.strip():
-                            return sender.strip()
-
-                    sender = await el.inner_text()
-                    if sender and sender.strip():
-                        return sender.strip()
-            except Exception:
-                continue
-        return None
+    # ------------------------------------------------------------------
+    # Timestamp parsing
+    # ------------------------------------------------------------------
 
     def parse_email_timestamp(self, timestamp_str: str) -> datetime | None:
         """Parse email timestamp string to timezone-aware datetime.
 
-        Supports common MDaemon/webmail formats:
+        Supports common IMAP INTERNALDATE / webmail formats:
         - YYYY-MM-DD HH:MM:SS
         - YYYY-MM-DD HH:MM
         - ISO-8601 with T (2024-01-15T12:00:00)
         - ISO-8601 with Z (2024-01-15T12:00:00Z)
         - DD/MM/YYYY HH:MM:SS
         - DD/MM/YYYY HH:MM
-        - DD MMM YYYY HH:MM:SS
+        - DD MMM YYYY HH:MM:SS  (IMAP INTERNALDATE format, e.g. 15-Jan-2024)
         - DD MMM YYYY HH:MM
         - MMM DD, YYYY HH:MM:SS
         - MMM DD, YYYY HH:MM
@@ -692,10 +445,13 @@ class MailboxClient:
 
         clean_str = timestamp_str.strip()
 
-        # Extract timezone info and strip it from the string before parsing
-        # Supported tz tokens: GMT+7, GMT-5, GMT+07:00, UTC, UTC+7, +0700, +07:00, -0500, Z
+        # Extract timezone info and strip it from the string before parsing.
+        # The tz token must appear at the END of the string; anchoring on the end
+        # prevents date parts like "-2024" in "15-Jan-2024" from being mistaken
+        # for an offset. Supported tokens: GMT+7, GMT-5, GMT+07:00, UTC, UTC+7,
+        # +0700, +07:00, -0500, Z.
         tz_match = re.search(
-            r"(GMT[+-]\d{1,2}(?::\d{2})?|UTC[+-]\d{1,2}(?::\d{2})?|[+-]\d{2}:?\d{2}|UTC|GMT|Z\b)",
+            r"(GMT[+-]\d{1,2}(?::\d{2})?|UTC[+-]\d{1,2}(?::\d{2})?|[+-]\d{2}:?\d{2}|UTC|GMT|Z)\s*$",
             clean_str,
             re.IGNORECASE,
         )
@@ -703,7 +459,7 @@ class MailboxClient:
         if tz_match:
             tz_token = tz_match.group(1)
             tz_offset = self._parse_tz_offset(tz_token)
-            clean_str = (clean_str[: tz_match.start()] + clean_str[tz_match.end() :]).strip()
+            clean_str = clean_str[: tz_match.start(1)].strip()
 
         # Common timestamp formats to try
         formats = [
@@ -713,6 +469,8 @@ class MailboxClient:
             "%Y-%m-%dT%H:%M",  # ISO with T, no seconds
             "%d/%m/%Y %H:%M:%S",
             "%d/%m/%Y %H:%M",
+            "%d-%b-%Y %H:%M:%S",  # IMAP INTERNALDATE, e.g. 15-Jan-2024 12:00:00
+            "%d-%b-%Y %H:%M",
             "%d %b %Y %H:%M:%S",
             "%d %b %Y %H:%M",
             "%b %d, %Y %H:%M:%S",

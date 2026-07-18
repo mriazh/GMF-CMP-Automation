@@ -11,8 +11,6 @@ from .exceptions import (
     AuthenticationError,
     BrowserError,
     OTPError,
-    OTPExpiredError,
-    OTPNotFoundError,
     OTPTimeoutError,
 )
 from .mailbox import MailboxClient, OTPToken
@@ -23,8 +21,9 @@ logger = logging.getLogger(__name__)
 class CMPLogin:
     """Handles CMP Portal login and OTP authentication."""
 
-    # Selectors for login page
+    # Selectors for CAS login page (exact proven selectors first)
     USERNAME_SELECTORS = [
+        "#username",
         'input[name="username"]',
         'input[id="username"]',
         'input[type="text"][autocomplete="username"]',
@@ -32,6 +31,7 @@ class CMPLogin:
         'input[placeholder*="username" i]',
     ]
     PASSWORD_SELECTORS = [
+        "#password",
         'input[name="password"]',
         'input[id="password"]',
         'input[type="password"][autocomplete="current-password"]',
@@ -39,6 +39,8 @@ class CMPLogin:
         'input[placeholder*="password" i]',
     ]
     SUBMIT_SELECTORS = [
+        "#fm1 input[name='submit'][type='submit']",
+        "#fm1 input[type='submit']",
         'button[type="submit"]',
         'input[type="submit"]',
         'button:has-text("Login")',
@@ -46,8 +48,9 @@ class CMPLogin:
         'button:has-text("Log In")',
     ]
 
-    # Selectors for token/OTP page
+    # Selectors for token/OTP page (exact proven selectors first)
     TOKEN_INPUT_SELECTORS = [
+        "#token",
         'input[name="token"]',
         'input[id="token"]',
         'input[name="otp"]',
@@ -57,6 +60,8 @@ class CMPLogin:
         'input[placeholder*="One Time" i]',
     ]
     TOKEN_SUBMIT_SELECTORS = [
+        "#login input[name='_eventId_submit'][type='submit']",
+        "#login input[type='submit']",
         'button[type="submit"]',
         'input[type="submit"]',
         'button:has-text("Submit")',
@@ -81,7 +86,10 @@ class CMPLogin:
 
     async def login(self, page: Page) -> None:
         """Authenticate CMP, reusing a strictly verified persistent session."""
+        # Record the workflow start timestamp before initial credential submission
+        # so OTP freshness validation only accepts emails received at/after this point.
         self.workflow_start_time = datetime.now(self.config.get_timezone())
+        self.mailbox.set_workflow_start_time(self.workflow_start_time)
         logger.info("Starting CMP login flow at %s", self.workflow_start_time.isoformat())
 
         if await self._is_authenticated(page):
@@ -92,11 +100,15 @@ class CMPLogin:
         if await self._is_authenticated(page):
             logger.info("CMP redirected to an authenticated portal session")
             return
+        # Connect IMAP before submitting credentials so the UID snapshot taken at
+        # connect time predates the OTP email arrival; otherwise the current run's
+        # OTP could be mistaken for a stale leftover and rejected.
+        await self.mailbox.connect()
         await self._fill_credentials(page)
         await self._submit_login(page)
         await self._wait_for_token_page(page)
 
-        otp_token = await self._retrieve_otp(page)
+        otp_token = await self._retrieve_otp()
         await self._submit_token(page, otp_token.token)
         await self._verify_authentication(page)
 
@@ -165,32 +177,28 @@ class CMPLogin:
         except PlaywrightTimeoutError as e:
             raise AuthenticationError("Timeout waiting for token page", str(e)) from e
 
-    async def _retrieve_otp(self, page: Page) -> OTPToken:
-        """Retrieve OTP from GMF webmail."""
-        logger.debug("Retrieving OTP from GMF webmail")
+    async def _retrieve_otp(self) -> OTPToken:
+        """Retrieve OTP directly from the GMF mailbox via IMAP."""
+        logger.debug("Retrieving OTP via IMAP")
         if not self.workflow_start_time:
             raise OTPError("Workflow start time not set")
 
-        # Set workflow start time on mailbox client for OTP freshness validation
+        # Workflow start time is propagated to the mailbox client in login();
+        # set it here again to guard against direct calls.
         self.mailbox.set_workflow_start_time(self.workflow_start_time)
 
-        # Use a separate page for webmail so the CMP token page is not navigated away.
-        webmail_page = await page.context.new_page()
         try:
             otp_token = await self.mailbox.get_latest_otp(
-                page=webmail_page,
                 subject=self.config.otp_email_subject,
                 timeout_seconds=self.config.otp_timeout_seconds,
                 poll_interval_seconds=self.config.otp_poll_interval_seconds,
             )
             logger.info("OTP retrieved successfully")
             return otp_token
-        except (OTPTimeoutError, OTPNotFoundError, OTPExpiredError):
+        except OTPTimeoutError:
             raise
         except Exception as e:
             raise OTPError("Failed to retrieve OTP", str(e)) from e
-        finally:
-            await webmail_page.close()
 
     async def _submit_token(self, page: Page, token: str) -> None:
         """Submit the OTP token on the CMP token page."""
