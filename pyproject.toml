@@ -36,6 +36,9 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
+markers = [
+    "live: opt-in live authentication test; requires CMP_RUN_LIVE_TESTS=1 (triggers a real OTP)",
+]
 
 [tool.ruff]
 line-length = 100

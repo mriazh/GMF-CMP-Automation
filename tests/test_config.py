@@ -172,6 +172,66 @@ class TestConfig:
             with pytest.raises(Exception):
                 Config()
 
+    def test_otp_clock_skew_tolerance_defaults(self, monkeypatch):
+        """Test that OTP clock skew tolerance uses a sensible default."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+
+            config = Config()
+            assert config.otp_clock_skew_tolerance_seconds == 120
+
+    def test_otp_clock_skew_tolerance_override(self, monkeypatch):
+        """Test that the tolerance can be overridden via environment variable."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("OTP_CLOCK_SKEW_TOLERANCE_SECONDS", "60")
+
+            config = Config()
+            assert config.otp_clock_skew_tolerance_seconds == 60
+
+    def test_otp_clock_skew_tolerance_bounds(self, monkeypatch):
+        """Test that an out-of-range clock skew tolerance is rejected."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("OTP_CLOCK_SKEW_TOLERANCE_SECONDS", "-1")
+
+            with pytest.raises(Exception):
+                Config()
+
+            monkeypatch.setenv("OTP_CLOCK_SKEW_TOLERANCE_SECONDS", "700")
+            with pytest.raises(Exception):
+                Config()
+
     def test_path_expansion(self, monkeypatch):
         """Test that paths are expanded and resolved."""
         with tempfile.TemporaryDirectory() as tmpdir:

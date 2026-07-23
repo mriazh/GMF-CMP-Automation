@@ -1,12 +1,13 @@
 """Tests for OTP timestamp filtering and timezone handling."""
 
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from cmp_automation.config import Config
-from cmp_automation.mailbox import MailboxClient
+from cmp_automation.mailbox import MailboxClient, _OtpMessage
 
 
 @pytest.fixture
@@ -127,6 +128,90 @@ class TestOTPTimestampFiltering:
         email_utc_before = datetime(2024, 1, 15, 4, 59, 0, tzinfo=utc_tz)  # 11:59 Jakarta
         email_jakarta_before = email_utc_before.astimezone(jakarta_tz)
         assert email_jakarta_before < start_time
+
+
+def _otp_message(uid: str, received: datetime) -> _OtpMessage:
+    """Build an OTP candidate message for the given received time."""
+    return _OtpMessage(
+        uid=uid,
+        subject="CMP - YOUR TOKEN",
+        received_at=received,
+        body="Your CMP OTP token is 123456. Do not share it.",
+    )
+
+
+def _run_poll(mailbox, start: datetime, messages: list[_OtpMessage]):
+    """Run a single poll cycle with mocked IMAP internals."""
+    mailbox._connection = MagicMock()
+    uids = [str(index + 1).encode() for index in range(len(messages))]
+    with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
+         patch.object(mailbox, "_search_uids", return_value=uids), \
+         patch.object(mailbox, "_fetch_message", side_effect=[("data",)] * len(messages)), \
+         patch.object(mailbox, "_parse_message", side_effect=messages):
+        return mailbox._poll_once("CMP - YOUR TOKEN", start)
+
+
+class TestClockSkewTolerance:
+    """Tests for the OTP email clock-skew tolerance window."""
+
+    def test_accepts_email_within_tolerance_window(self, mailbox):
+        """Test that an email received slightly before start is accepted when within tolerance."""
+        jakarta_tz = ZoneInfo("Asia/Jakarta")
+        start = datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz)
+        email_time = start - timedelta(seconds=119)  # inside the 120s tolerance
+
+        result = _run_poll(mailbox, start, [_otp_message("1", email_time)])
+
+        assert result is not None
+        assert result.email_received_at == email_time
+
+    def test_accepts_email_exactly_at_cutoff(self, mailbox):
+        """Test that an email received exactly at the cutoff boundary is accepted."""
+        jakarta_tz = ZoneInfo("Asia/Jakarta")
+        start = datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz)
+        cutoff_time = start - timedelta(seconds=120)  # exactly at the 120s cutoff
+
+        result = _run_poll(mailbox, start, [_otp_message("1", cutoff_time)])
+
+        assert result is not None
+        assert result.email_received_at == cutoff_time
+
+    def test_rejects_email_before_tolerance_cutoff(self, mailbox):
+        """Test that an email older than the tolerance window is rejected."""
+        jakarta_tz = ZoneInfo("Asia/Jakarta")
+        start = datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz)
+        too_old = start - timedelta(seconds=121)  # just outside the 120s tolerance
+
+        result = _run_poll(mailbox, start, [_otp_message("1", too_old)])
+
+        assert result is None
+
+    def test_uid_baseline_still_rejects_previous_run(self, mailbox):
+        """Test that UID baseline filtering still rejects leftovers even within tolerance."""
+        jakarta_tz = ZoneInfo("Asia/Jakarta")
+        start = datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz)
+        mailbox._base_uid = 10
+
+        # UID below baseline but within timestamp tolerance must still be rejected.
+        result = _run_poll(mailbox, start, [_otp_message("5", start)])
+
+        assert result is None
+
+    def test_zero_tolerance_requires_at_or_after_start(self, mailbox):
+        """Test that tolerance=0 preserves the strict pre-tolerance behavior."""
+        strict_config = mailbox.config.model_copy(
+            update={"otp_clock_skew_tolerance_seconds": 0}
+        )
+        strict_mailbox = MailboxClient(strict_config)
+        jakarta_tz = ZoneInfo("Asia/Jakarta")
+        start = datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz)
+
+        one_sec_early = start - timedelta(seconds=1)
+        assert _run_poll(strict_mailbox, start, [_otp_message("1", one_sec_early)]) is None
+
+        # A message exactly at start time is still accepted with tolerance=0.
+        at_start = _run_poll(strict_mailbox, start, [_otp_message("2", start)])
+        assert at_start is not None
 
 
 class TestTimestampNormalization:

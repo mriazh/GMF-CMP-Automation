@@ -95,11 +95,10 @@ class TestExcelReportGenerator:
             assert result.exists()
 
     def test_generate_report_auto_naming(self, generator, sample_xlsx, sample_screenshot):
-        """Test automatic output naming with _with_dashboard suffix."""
+        """Test automatic output naming with ' - Edited' suffix."""
         result = generator.generate_report(sample_xlsx, sample_screenshot)
 
-        assert result.name == "Sim_export_20240115_120000_with_dashboard.xlsx" or \
-               result.name.endswith("_with_dashboard.xlsx")
+        assert result.name.endswith(" - Edited.xlsx")
         assert result.exists()
 
     def test_generate_report_inserts_rows(self, generator, sample_xlsx, sample_screenshot):
@@ -131,6 +130,21 @@ class TestExcelReportGenerator:
             img = ws._images[0]
             assert img.anchor._from.row == 0  # Row 1 (0-indexed)
             assert img.anchor._from.col == 0  # Col A (0-indexed)
+
+    def test_generate_report_rows_no_custom_height(self, generator, sample_xlsx, sample_screenshot):
+        """Test that rows 1-7 do not receive explicit custom heights."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "report.xlsx"
+            generator.generate_report(sample_xlsx, sample_screenshot, output_path)
+
+            from openpyxl import load_workbook
+            wb = load_workbook(output_path)
+            ws = wb.active
+
+            for row_num in range(1, 8):
+                assert ws.row_dimensions[row_num].height is None, (
+                    f"Row {row_num} should not have an explicit custom height"
+                )
 
     def test_generate_report_image_sizing(self, generator, sample_xlsx, sample_screenshot):
         """Test that image is sized to span ~15 cols x 7 rows."""

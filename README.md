@@ -85,7 +85,7 @@ python -m cmp_automation --download-dir /path/to/downloads --profile-dir /path/t
 
 The workflow produces:
 1. `sim_export_YYYYMMDD_HHMMSS.xlsx` - Products export
-2. `sim_export_YYYYMMDD_HHMMSS_with_dashboard.xlsx` - Final report with embedded dashboard screenshot
+2. `sim_export_YYYYMMDD_HHMMSS - Edited.xlsx` - Final report with embedded dashboard screenshot
 
 ## Testing
 

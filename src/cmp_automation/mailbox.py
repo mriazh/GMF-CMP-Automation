@@ -3,8 +3,8 @@
 Replaces the previous Playwright webmail UI scraping approach with a direct
 IMAP client (proven pattern from ``GMF-CMP-Monitor``). Connects via IMAPS
 (``imaplib.IMAP4_SSL``) to the GMF mailbox, polls for OTP emails matching the
-exact subject, and accepts only messages received at/after the workflow start
-timestamp.
+exact subject, and accepts only messages received within the workflow's
+freshness window (start time minus the configured clock-skew tolerance).
 """
 
 import asyncio
@@ -220,7 +220,9 @@ class MailboxClient:
         """Perform one IMAP search/fetch cycle and return the newest valid OTP.
 
         Accepts only messages whose subject matches (case-insensitive) and whose
-        received time is at/after the workflow start timestamp.
+        received time is at/after the freshness cutoff (workflow start minus the
+        configured clock-skew tolerance). UID baseline filtering still rejects
+        leftover messages from previous runs.
         """
         if self._connection is None:
             raise OTPError("IMAP connection not established")
@@ -249,11 +251,18 @@ class MailboxClient:
                 if message:
                     messages.append(message)
 
+        # Apply the configured clock-skew tolerance to the freshness cutoff so
+        # that a mail-server clock slightly behind the client clock does not
+        # cause fresh OTP emails to be falsely rejected as stale. The UID
+        # baseline above still rejects leftovers from previous runs.
+        cutoff = workflow_start - timedelta(
+            seconds=self.config.otp_clock_skew_tolerance_seconds
+        )
         valid = [
             message
             for message in messages
             if message.subject.strip().lower() == subject.strip().lower()
-            and message.received_at >= workflow_start
+            and message.received_at >= cutoff
         ]
         if not valid:
             logger.debug(

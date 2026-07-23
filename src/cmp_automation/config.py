@@ -43,6 +43,12 @@ class Config(BaseSettings):
     # OTP Configuration
     otp_timeout_seconds: int = Field(default=120, ge=10, le=600, description="OTP polling timeout in seconds")
     otp_poll_interval_seconds: int = Field(default=5, ge=1, le=60, description="OTP polling interval in seconds")
+    otp_clock_skew_tolerance_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=600,
+        description="Allowed clock skew tolerance in seconds for OTP email timestamp comparison",
+    )
 
     # Timezone
     timezone: str = Field(default="Asia/Jakarta", description="Timezone for timestamp handling")

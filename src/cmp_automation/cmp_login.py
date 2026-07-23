@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from urllib.parse import urlparse
 
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -67,16 +68,6 @@ class CMPLogin:
         'button:has-text("Submit")',
         'button:has-text("Verify")',
         'button:has-text("Continue")',
-    ]
-
-    # Selectors for authenticated state verification
-    AUTHENTICATED_SELECTORS = [
-        '[data-testid="app-layout"]',
-        '[data-testid="products-table"]',
-        '[data-testid="dashboard"]',
-        '.v-csslayout.sparks',
-        'a[href*="#products"]',
-        'a[href*="#dashboard"]',
     ]
 
     def __init__(self, config: Config, mailbox: MailboxClient):
@@ -219,39 +210,99 @@ class CMPLogin:
                 continue
         raise AuthenticationError("Could not find token submit button")
 
-    async def _is_authenticated(self, page: Page) -> bool:
-        """Return true only for a portal fragment plus a known portal element."""
-        url = page.url
-        if "#!products" not in url and "#!dashboard" not in url:
+    def _is_portal_page(self, url: str, fragment: str) -> bool:
+        """Strict portal URL validation: HTTPS, approved host, root path, exact fragment.
+
+        No substring-only host checks and no trusting untrusted hosts. The
+        approved host is derived from the configured products URL so the check
+        follows configuration.
+        """
+        try:
+            if not isinstance(url, str):
+                return False
+            parsed = urlparse(url)
+            approved = urlparse(self.config.cmp_products_url)
+            if parsed.scheme != "https" or approved.scheme != "https":
+                return False
+            if approved.hostname is None or parsed.hostname != approved.hostname:
+                return False
+            # Reject any explicit port: hostname alone would accept :443/:8443 tricks.
+            if parsed.port is not None:
+                return False
+            if parsed.path not in ("", "/"):
+                return False
+            if parsed.fragment != fragment:
+                return False
+            return True
+        except Exception:
             return False
-        for selector in self.AUTHENTICATED_SELECTORS:
-            try:
-                locator = page.locator(selector).first
-                if await locator.count() and await locator.is_visible():
-                    return True
-            except Exception:
-                continue
+
+    def _is_products_page(self, url: str) -> bool:
+        """Strict check for the approved Products page URL (fragment '!products')."""
+        return self._is_portal_page(url, "!products")
+
+    def _is_dashboard_page(self, url: str) -> bool:
+        """Strict check for the approved Dashboard page URL (fragment '!dashboard')."""
+        return self._is_portal_page(url, "!dashboard")
+
+    async def _window_href(self, page: Page) -> str | None:
+        """Read the current SPA URL via ``window.location.href``, or None on failure.
+
+        SPA hash navigation may update ``window.location`` before ``page.url``;
+        this is the fallback used by the authentication checks below.
+        """
+        try:
+            href = await page.evaluate("window.location.href")
+            return href if isinstance(href, str) else None
+        except Exception:
+            return None
+
+    async def _is_authenticated(self, page: Page) -> bool:
+        """Return true only for a strictly validated portal session.
+
+        Recognizes the approved Products or Dashboard URL with exact HTTPS,
+        host, root path, and fragment validation. Never relies on weak
+        substring matches or DOM selectors.
+        """
+        if self._is_products_page(page.url) or self._is_dashboard_page(page.url):
+            return True
+        # SPA hash navigation may lag behind page.url - fall back to JS state.
+        href = await self._window_href(page)
+        if href is not None and (
+            self._is_products_page(href) or self._is_dashboard_page(href)
+        ):
+            return True
         return False
 
     async def _verify_authentication(self, page: Page) -> None:
-        """Verify authentication using portal URL and a known portal element."""
+        """Verify authentication by reaching the strictly validated Products URL.
+
+        After the OTP is submitted, CAS redirects to the approved portal and the
+        SPA navigates to ``#!products``. The exact Products URL (HTTPS, approved
+        host, root path, fragment ``!products``) is the authentication guarantee;
+        no speculative DOM selectors are required.
+        """
         logger.debug("Verifying authentication success")
-        try:
-            deadline = 30000
-            for _ in range(6):
-                if await self._is_authenticated(page):
-                    logger.debug("CMP portal authentication verified")
-                    return
-                await page.wait_for_timeout(deadline // 6)
-            raise AuthenticationError("Authentication verification failed - portal state was not confirmed")
-        except PlaywrightTimeoutError as e:
-            # Get diagnostic info
-            current_url = page.url
-            dom_summary = await self._get_dom_summary(page)
-            raise AuthenticationError(
-                "Authentication verification timed out",
-                f"URL: {current_url}, DOM: {dom_summary}",
-            ) from e
+        deadline = 30000
+        interval = 2000
+        for _ in range(deadline // interval):
+            if self._is_products_page(page.url):
+                logger.debug("CMP portal authentication verified")
+                return
+            # SPA hash navigation may update window.location before page.url.
+            href = await self._window_href(page)
+            if href is not None and self._is_products_page(href):
+                logger.debug("CMP portal authentication verified (window.location.href)")
+                return
+            await page.wait_for_timeout(interval)
+
+        # Get diagnostic info and raise with it - do not lose the failure context.
+        current_url = page.url
+        dom_summary = await self._get_dom_summary(page)
+        raise AuthenticationError(
+            "Authentication verification failed - Products page was not reached",
+            f"URL: {current_url}, DOM: {dom_summary}",
+        )
 
     async def _get_dom_summary(self, page: Page) -> str:
         """Get a brief DOM summary for diagnostics without exposing secrets."""

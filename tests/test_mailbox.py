@@ -155,11 +155,12 @@ class TestPollOnce:
         )
 
     def test_rejects_all_older_emails(self, mailbox):
-        """Test that no email older than start time is accepted."""
+        """Test that no email older than the tolerance cutoff is accepted."""
         start = _start()
         mailbox._connection = MagicMock()
         messages = [
-            _message("1", received=datetime(2024, 1, 15, 11, 59, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
+            # 3 minutes early - outside the 120s clock-skew tolerance window
+            _message("1", received=datetime(2024, 1, 15, 11, 57, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
             _message("2", received=datetime(2024, 1, 14, 23, 59, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
         ]
 
@@ -240,6 +241,53 @@ class TestPollOnce:
             assert result is not None
             assert result.email_received_at == start
             assert mock_fetch.call_count == 1
+
+    def test_accepts_email_within_clock_skew_tolerance(self, mailbox):
+        """Test that an email received before start (within skew tolerance) is accepted."""
+        start = _start()
+        mailbox._connection = MagicMock()
+        within_tolerance = start - timedelta(seconds=60)  # 60s early < 120s tolerance
+
+        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
+             patch.object(mailbox, "_search_uids", return_value=[b"1"]), \
+             patch.object(mailbox, "_fetch_message", return_value=("data",)), \
+             patch.object(mailbox, "_parse_message", return_value=_message("1", received=within_tolerance)):
+            result = mailbox._poll_once("CMP - YOUR TOKEN", start)
+
+        assert result is not None
+        assert result.email_received_at == within_tolerance
+
+    def test_rejects_email_outside_clock_skew_tolerance(self, mailbox):
+        """Test that an email older than the skew tolerance is rejected."""
+        start = _start()
+        mailbox._connection = MagicMock()
+        too_old = start - timedelta(seconds=300)  # 5 min early > 120s tolerance
+
+        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
+             patch.object(mailbox, "_search_uids", return_value=[b"1"]), \
+             patch.object(mailbox, "_fetch_message", return_value=("data",)), \
+             patch.object(mailbox, "_parse_message", return_value=_message("1", received=too_old)):
+            result = mailbox._poll_once("CMP - YOUR TOKEN", start)
+
+        assert result is None
+
+    def test_clock_skew_tolerance_zero_preserves_strict_behavior(self, mailbox):
+        """Test that tolerance=0 keeps the strict pre-tolerance timestamp check."""
+        strict_config = mailbox.config.model_copy(
+            update={"otp_clock_skew_tolerance_seconds": 0}
+        )
+        strict_mailbox = MailboxClient(strict_config)
+        start = _start()
+        strict_mailbox._connection = MagicMock()
+        one_sec_early = start - timedelta(seconds=1)
+
+        with patch.object(strict_mailbox, "_refresh_mailbox", new=MagicMock()), \
+             patch.object(strict_mailbox, "_search_uids", return_value=[b"1"]), \
+             patch.object(strict_mailbox, "_fetch_message", return_value=("data",)), \
+             patch.object(strict_mailbox, "_parse_message", return_value=_message("1", received=one_sec_early)):
+            result = strict_mailbox._poll_once("CMP - YOUR TOKEN", start)
+
+        assert result is None
 
     def test_raises_when_not_connected(self, mailbox):
         """Test that polling raises when no IMAP connection exists."""

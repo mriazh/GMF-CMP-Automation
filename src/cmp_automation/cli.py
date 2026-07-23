@@ -111,8 +111,20 @@ async def main() -> int:
 
 
 def cli_main() -> None:
-    """Synchronous entry point for setuptools."""
-    sys.exit(asyncio.run(main()))
+    """Synchronous entry point for setuptools.
+
+    KeyboardInterrupt from ``asyncio.run(main())`` (e.g. Ctrl+C) is handled
+    here because the ``except KeyboardInterrupt`` inside async ``main()``
+    cannot intercept it once it propagates out of the event loop. It is logged
+    and converted to exit code 130 without emitting a traceback. Ordinary
+    unexpected exceptions are not suppressed and propagate normally.
+    """
+    try:
+        code = asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user")
+        code = 130
+    sys.exit(code)
 
 
 if __name__ == "__main__":

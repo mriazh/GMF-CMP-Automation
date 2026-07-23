@@ -49,7 +49,7 @@ class ExcelReportGenerator:
         if ws is None:
             raise ExcelReportError("No active worksheet found")
 
-        already_processed = xlsx_path.stem.endswith("_with_dashboard") and bool(
+        already_processed = xlsx_path.stem.endswith(" - Edited") and bool(
             getattr(ws, "_images", [])
         )
         if not already_processed:
@@ -61,10 +61,10 @@ class ExcelReportGenerator:
         # Determine output path
         if output_path is None:
             stem = xlsx_path.stem
-            if stem.endswith("_with_dashboard"):
+            if stem.endswith(" - Edited"):
                 output_path = xlsx_path
             else:
-                output_path = xlsx_path.parent / f"{stem}_with_dashboard.xlsx"
+                output_path = xlsx_path.parent / f"{stem} - Edited.xlsx"
 
         # Save
         wb.save(output_path)
@@ -85,8 +85,6 @@ class ExcelReportGenerator:
         logger.debug("Inserting image at A1")
         img = XLImage(str(image_path))
 
-        for row in range(1, self.IMAGE_TOP_ROWS + 1):
-            ws.row_dimensions[row].height = 30
         target_width = sum(
             (ws.column_dimensions[get_column_letter(col)].width or 8.43) * 7
             for col in range(1, self.IMAGE_SPAN_COLS + 1)
