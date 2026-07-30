@@ -122,8 +122,26 @@ class TestWorkflow:
             result = await run_workflow(config, headed=True, dry_run=False)
 
             assert result == Path("/tmp/result.xlsx")
-            mock_workflow_class.assert_called_once_with(config, headed=True, dry_run=False)
+            mock_workflow_class.assert_called_once_with(
+                config,
+                headed=True,
+                dry_run=False,
+                diagnose_export=False,
+                diagnose_auth=False,
+            )
             mock_workflow.run.assert_called_once()
+
+    def test_diagnose_auth_defaults_off_in_workflow(self, config):
+        """The auth diagnostic flag defaults to off on the workflow."""
+        workflow = CMPAutomationWorkflow(config)
+        assert workflow.diagnose_auth is False
+        assert workflow.login.diagnose_auth is False
+
+    def test_diagnose_auth_forwards_to_login(self, config):
+        """The auth diagnostic flag is forwarded to CMPLogin."""
+        workflow = CMPAutomationWorkflow(config, diagnose_auth=True)
+        assert workflow.diagnose_auth is True
+        assert workflow.login.diagnose_auth is True
 
 
 class TestWorkflowDryRun:

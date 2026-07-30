@@ -56,6 +56,20 @@ def parse_args() -> argparse.Namespace:
         default="INFO",
         help="Set logging level",
     )
+    parser.add_argument(
+        "--diagnose-export",
+        action="store_true",
+        help="Opt-in: record sanitized network metadata around the 'To xlsx' "
+        "click / Confirm wait (diagnostic only; no behavior change)",
+    )
+    parser.add_argument(
+        "--diagnose-auth",
+        action="store_true",
+        help="Opt-in: record sanitized metadata (URL state categories, "
+        "navigation events, structural DOM counts, network metadata) around "
+        "the OTP submission / authentication verification (diagnostic only; "
+        "no behavior change)",
+    )
     return parser.parse_args()
 
 
@@ -91,7 +105,13 @@ async def main() -> int:
         logger.info("Configuration validated successfully")
 
         # Run workflow
-        result_path = await run_workflow(config, headed=args.headed, dry_run=args.dry_run)
+        result_path = await run_workflow(
+            config,
+            headed=args.headed,
+            dry_run=args.dry_run,
+            diagnose_export=args.diagnose_export,
+            diagnose_auth=args.diagnose_auth,
+        )
 
         logger.info("Success! Output: %s", result_path)
         return 0

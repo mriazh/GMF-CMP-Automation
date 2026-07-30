@@ -11,6 +11,7 @@ from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .config import Config
 from .exceptions import DownloadError, ProductsExportError
+from .network_diag import NetworkDiag
 from .utils import generate_export_filename, is_approved_portal_url, wait_for_portal_url
 
 logger = logging.getLogger(__name__)
@@ -97,27 +98,110 @@ class ProductsExporter:
         '[role="dialog"] button:has-text("Confirm")',
         '.v-confirm-dialog button:has-text("Confirm")',
     ]
-    PROCESSING_POPUP_SELECTORS = [
-        '.v-window:has-text("Processing")',
-        '.v-window:has-text("Export")',
-        '[role="dialog"]:has-text("Processing")',
-        ".export-processing",
-    ]
+    # Safe structural diagnostic for the confirm dialog state: reports only
+    # element counts and visibility flags - never element text.
+    _CONFIRM_DIAGNOSTIC_JS = """() => {
+  const isVisible = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const count = (sel) => document.querySelectorAll(sel).length;
+  const visibleCount = (sel) =>
+    Array.from(document.querySelectorAll(sel)).filter(isVisible).length;
+  return {
+    confirmButtonTotal: count('#confirmdialog-ok-button'),
+    confirmButtonVisible: visibleCount('#confirmdialog-ok-button'),
+    windows: count('.v-window'),
+    windowsVisible: visibleCount('.v-window'),
+    dialogs: count('[role="dialog"]'),
+    dialogsVisible: visibleCount('[role="dialog"]'),
+    confirmDialogs: count('.v-confirm-dialog, .confirmdialog'),
+    confirmDialogsVisible: visibleCount('.v-confirm-dialog, .confirmdialog')
+  };
+}"""
+
+    # Safe structural diagnostic for the export submenu state: reports only
+    # element counts and visibility flags - never element text. Uses a
+    # real-CSS variant of the caption selector (no Playwright-only
+    # ``:has-text()``) so it can run inside the page.
+    #
+    # The ``popupContainer`` field is the key false-positive detector: a
+    # visible caption that belongs to a static/hidden Vaadin template
+    # satisfies the caption check while the actual interactive submenu
+    # popup (``.v-menubar-popup``) never opened. When
+    # ``captionVisible>0`` but ``popupContainer=0``, the submenu is
+    # definitely not open and any click on the caption is a no-op.
+    _MENU_DIAGNOSTIC_JS = """() => {
+  const isVisible = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const count = (sel) => document.querySelectorAll(sel).length;
+  const visibleCount = (sel) =>
+    Array.from(document.querySelectorAll(sel)).filter(isVisible).length;
+  const captionSel = 'span.v-menubar-menuitem-caption:has(span.v-icon.IcoMoon-Lindua)';
+  const popupSel = '.v-menubar-popup, .v-menubar-submenu, [role="menu"]';
+  return {
+    captionTotal: count(captionSel),
+    captionVisible: visibleCount(captionSel),
+    popupContainer: count(popupSel),
+    popupContainerVisible: visibleCount(popupSel),
+    menus: count('.v-menubar-popup, .v-menubar-submenu, [role="menu"]'),
+    menusVisible: visibleCount('.v-menubar-popup, .v-menubar-submenu, [role="menu"]'),
+    windows: count('.v-window'),
+    windowsVisible: visibleCount('.v-window'),
+    dialogs: count('[role="dialog"]'),
+    dialogsVisible: visibleCount('[role="dialog"]')
+  };
+}"""
+
     DOWNLOAD_BUTTON_SELECTORS = [
         '[role="button"]:has-text("Download")',
         'button:has-text("Download")',
         'a:has-text("Download")',
         '.v-button:has-text("Download")',
     ]
+    # Bounded single window for the actual file download. The 15-second
+    # visibility bound above stays untouched; this covers only the ``download``
+    # event itself, which can lag well beyond 60s on a slow portal (observed
+    # live). The Download control is clicked exactly once: a re-click while the
+    # first server-side export may still be running would start a second
+    # export and produce a duplicate download, so the click is never repeated.
+    DOWNLOAD_TIMEOUT_MS = 120000
+    # Bounded retries for the exact "To xlsx" submenu selection. Vaadin
+    # re-renders the export submenu while it is being interacted with (the
+    # exact selector can be visible one moment and detached the next), so the
+    # primary selection is retried in bounded attempts before any fallback.
+    XLSX_SELECT_ATTEMPTS = 3
+    # Bounded re-wait budget for the confirm dialog. The dialog is a pure
+    # server response to the "To xlsx" click - no re-click happens, so
+    # waiting again cannot double-submit anything. On a degraded portal the
+    # dialog can take well over 30s to render (observed live).
+    CONFIRM_WAIT_TIMEOUT_MS = 30000
+    CONFIRM_WAIT_ATTEMPTS = 2
     CLOSE_BUTTON_SELECTORS = [
         'button:has-text("Close")',
         'button:has-text("Tutup")',
         '[role="dialog"] button:has-text("Close")',
         ".v-window-closebutton",
     ]
+    # Bounded retries for closing the export popup. The dialog can take a
+    # moment to become closable after the download completes (observed as the
+    # "Could not find close button for export popup" warning), so the close
+    # is retried with a short delay. Closing is best-effort: the export
+    # itself already succeeded, so failure is only a warning.
+    CLOSE_MAX_ATTEMPTS = 3
+    CLOSE_RETRY_DELAY_MS = 1500
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, diagnose_export: bool = False):
         self.config = config
+        # Opt-in diagnostic only: passively records sanitized network metadata
+        # across the export-menu open → "To xlsx" click → Confirm wait
+        # (see ``NetworkDiag``).  It never changes workflow behavior - no
+        # retries, no re-clicks, no extra requests - and is inactive unless
+        # ``--diagnose-export`` is passed.
+        self.diagnose_export = diagnose_export
+        self._network_diag: NetworkDiag | None = None
 
     def _popup(self, page: Page) -> Locator:
         """Return visible export dialogs/windows only."""
@@ -130,9 +214,28 @@ class ProductsExporter:
         await self._navigate_to_products(page)
         await self._wait_for_table(page)
         await self._sort_by_billing_status(page)
-        await self._open_export_menu(page)
-        await self._select_xlsx_export(page)
-        await self._confirm_export(page)
+        # Opt-in: attach the sanitized network listener before the export
+        # menu is opened so network traffic across the full export-menu →
+        # "To xlsx" → Confirm sequence is captured — including the menu-
+        # opening click itself, which can fail when the server does not
+        # respond.  Detached and summarized after the Confirm stage —
+        # including on failure — so the diagnostic can distinguish
+        # no-request / request-but-no-dialog / failed / late-response.
+        if self.diagnose_export:
+            self._network_diag = NetworkDiag()
+            self._network_diag.attach(page)
+        try:
+            await self._open_export_menu(page)
+            await self._select_xlsx_export(page)
+            await self._confirm_export(page)
+        finally:
+            if self._network_diag is not None:
+                self._network_diag.detach()
+                logger.info(
+                    "Export-click network diagnostic: %s",
+                    self._network_diag.summary(),
+                )
+                self._network_diag = None
         download_path = await self._wait_for_download(page)
         await self._close_export_popup(page)
 
@@ -309,23 +412,56 @@ class ProductsExporter:
         The primary target is the Vaadin menubar item whose submenu is an
         overlay, not a ``.v-window`` or ``[role="dialog"]``, so after the
         click we wait for the exact visible "To xlsx" caption instead.
+
+        Vaadin renders hidden template/duplicate menu items, so the visible
+        filter must come before ``.first``: otherwise ``.first`` can select a
+        hidden match while another matching control is the visible one.
+
+        After the caption wait succeeds, a *visible* popup-container check
+        verifies the submenu is genuinely open.  A static Vaadin template
+        caption can satisfy ``wait_for(visible=True)`` while no interactive
+        popup exists — the check rejects this false positive early with a
+        clear ``ProductsExportError`` before any XLSX selection is attempted.
         """
         logger.debug("Opening export menu")
         for selector in self.EXPORT_MENU_SELECTORS:
             try:
-                button = page.locator(selector).first
-                if await button.count() > 0:
-                    await button.click()
-                    logger.debug("Opened export menu using selector: %s", selector)
-                    try:
-                        await page.locator(self.EXPORT_XLSX_SELECTORS[0]).first.wait_for(
-                            state="visible", timeout=10000
-                        )
-                    except PlaywrightTimeoutError as e:
-                        raise ProductsExportError(
-                            "Export submenu (To xlsx) did not become visible"
-                        ) from e
-                    return
+                menu_item = page.locator(selector).filter(visible=True).first
+                await menu_item.wait_for(state="visible", timeout=10000)
+                await menu_item.click()
+                logger.debug("Opened export menu using selector: %s", selector)
+                try:
+                    submenu = (
+                        page.locator(self.EXPORT_XLSX_SELECTORS[0])
+                        .filter(visible=True)
+                        .first
+                    )
+                    # The submenu renders after a server round-trip; on a slow
+                    # portal (observed live at > 10s) this needs the same
+                    # bounded 30s budget as the confirm dialog.
+                    await submenu.wait_for(state="visible", timeout=30000)
+                except PlaywrightTimeoutError as e:
+                    raise ProductsExportError(
+                        "Export submenu (To xlsx) did not become visible"
+                    ) from e
+                # Verify a *visible* submenu container is actually open,
+                # not just a static caption element.  Vaadin renders hidden
+                # template menu items whose captions pass the CSS visibility
+                # check but belong to no interactive popup — clicking them
+                # is a no-op.  We require at least one *visible* popup
+                # container (``.v-menubar-popup``) so a hidden/off-screen
+                # template cannot satisfy the guard.
+                popup_count = await page.locator(
+                    '.v-menubar-popup, .v-menubar-submenu, [role="menu"]'
+                ).filter(visible=True).count()
+                if popup_count == 0:
+                    diag = await self._menu_dom_diagnostic(page)
+                    raise ProductsExportError(
+                        "Export submenu (To xlsx) caption is visible but "
+                        "no submenu container is open",
+                        diag,
+                    )
+                return
             except ProductsExportError:
                 # A real diagnostic (the exact submenu was clicked but never
                 # appeared) must propagate - not be swallowed by the
@@ -349,35 +485,81 @@ class ProductsExporter:
         except Exception:
             await item.evaluate("el => el.click()")
 
+    async def _run_dom_diagnostic(self, page: Page, js: str) -> str:
+        """Run a bounded structural diagnostic script and format its counts.
+
+        Reports only counts and visibility flags - never element text - so
+        SIM numbers, credentials, or menu labels cannot leak into logs.
+        """
+        try:
+            info = await page.evaluate(js)
+        except Exception:
+            return "Unable to retrieve DOM diagnostic"
+        if not isinstance(info, dict):
+            return "Unable to retrieve DOM diagnostic"
+        parts = [f"{k}={v}" for k, v in info.items()]
+        return " | ".join(parts) if parts else "Unable to retrieve DOM diagnostic"
+
+    async def _menu_dom_diagnostic(self, page: Page) -> str:
+        """Collect a bounded structural diagnostic of the export submenu state."""
+        return await self._run_dom_diagnostic(page, self._MENU_DIAGNOSTIC_JS)
+
+    async def _confirm_dom_diagnostic(self, page: Page) -> str:
+        """Collect a bounded structural diagnostic of the confirm dialog state."""
+        return await self._run_dom_diagnostic(page, self._CONFIRM_DIAGNOSTIC_JS)
+
     async def _select_xlsx_export(self, page: Page) -> None:
         """Select 'To xlsx' from the export submenu.
 
         The primary selector targets the exact Vaadin menubar submenu caption
         (``IcoMoon-Lindua`` icon + "To xlsx" text). The submenu is an overlay,
         not a ``.v-window`` or ``[role="dialog"]``, so it is searched from the
-        page and waited for until visible. Generic fallbacks are then searched
-        from the visible popup as before.
+        page and waited for until visible. Vaadin re-renders the submenu while
+        it is being interacted with, so the primary selection is retried in
+        ``XLSX_SELECT_ATTEMPTS`` bounded attempts (fresh locator each time)
+        before generic fallbacks (searched from the visible popup) run.
         """
         logger.debug("Selecting XLSX export")
         primary = self.EXPORT_XLSX_SELECTORS[0]
-        try:
-            item = page.locator(primary).first
-            await item.wait_for(state="visible", timeout=10000)
-            await self._click_menu_item(item)
-            logger.debug("Selected XLSX export using selector: %s", primary)
-            return
-        except Exception:
-            pass
+        for attempt in range(1, self.XLSX_SELECT_ATTEMPTS + 1):
+            try:
+                item = (
+                    page.locator(primary)
+                    .filter(visible=True)
+                    .first
+                )
+                await item.wait_for(state="visible", timeout=10000)
+                await self._click_menu_item(item)
+                logger.debug(
+                    "Selected XLSX export using selector: %s (attempt %d/%d)",
+                    primary,
+                    attempt,
+                    self.XLSX_SELECT_ATTEMPTS,
+                )
+                return
+            except Exception:
+                logger.debug(
+                    "Primary XLSX selector not usable (attempt %d/%d); menu diagnostic: %s",
+                    attempt,
+                    self.XLSX_SELECT_ATTEMPTS,
+                    await self._menu_dom_diagnostic(page),
+                )
         for selector in self.EXPORT_XLSX_SELECTORS[1:]:
             try:
-                item = self._popup(page).locator(selector).first
+                item = (
+                    self._popup(page)
+                    .locator(selector)
+                    .filter(visible=True)
+                    .first
+                )
                 if await item.count() > 0:
                     await self._click_menu_item(item)
                     logger.debug("Selected XLSX export using selector: %s", selector)
                     return
             except Exception:
                 continue
-        raise ProductsExportError("Could not find XLSX export option")
+        diag = await self._menu_dom_diagnostic(page)
+        raise ProductsExportError("Could not find XLSX export option", diag)
 
     async def _confirm_export(self, page: Page) -> None:
         """Handle the Vaadin ConfirmDialog.
@@ -393,83 +575,114 @@ class ProductsExporter:
         try:
             primary_button = page.locator(primary).first
             button: Locator | None = primary_button
-            try:
-                await primary_button.wait_for(state="visible", timeout=15000)
-            except PlaywrightTimeoutError:
-                button = None
+            # The dialog renders after a server round-trip; on a slow portal
+            # this can exceed a single window (observed live), so the wait is
+            # re-run in bounded attempts - waiting again is safe because no
+            # click happens while waiting.
+            for wait_attempt in range(1, self.CONFIRM_WAIT_ATTEMPTS + 1):
+                try:
+                    await primary_button.wait_for(
+                        state="visible", timeout=self.CONFIRM_WAIT_TIMEOUT_MS
+                    )
+                    break
+                except PlaywrightTimeoutError:
+                    if wait_attempt < self.CONFIRM_WAIT_ATTEMPTS:
+                        logger.debug(
+                            "Confirm button not visible in %d ms (attempt %d/%d); dialog diagnostic: %s",
+                            self.CONFIRM_WAIT_TIMEOUT_MS,
+                            wait_attempt,
+                            self.CONFIRM_WAIT_ATTEMPTS,
+                            await self._confirm_dom_diagnostic(page),
+                        )
+                    else:
+                        logger.debug(
+                            "Confirm button not visible after %d attempts; dialog diagnostic: %s",
+                            self.CONFIRM_WAIT_ATTEMPTS,
+                            await self._confirm_dom_diagnostic(page),
+                        )
+                        button = None
             if button is not None:
                 await button.click()
                 logger.debug("Confirmed export using selector: %s", primary)
                 return
             for selector in self.CONFIRM_DIALOG_SELECTORS[1:]:
                 try:
-                    item = self._popup(page).locator(selector).first
+                    item = (
+                        self._popup(page)
+                        .locator(selector)
+                        .filter(visible=True)
+                        .first
+                    )
                     if await item.count() > 0:
                         await item.click()
                         logger.debug("Confirmed export using selector: %s", selector)
                         return
                 except Exception:
                     continue
-            raise ProductsExportError("Export confirmation dialog or Confirm control was not found")
+            diag = await self._confirm_dom_diagnostic(page)
+            raise ProductsExportError(
+                "Export confirmation dialog or Confirm control was not found", diag
+            )
         except ProductsExportError:
             raise
         except Exception as e:
             raise ProductsExportError("Failed to confirm export", str(e)) from e
 
     async def _wait_for_download(self, page: Page) -> Path:
-        """Wait for processing to complete and download the file."""
-        logger.debug("Waiting for export processing and download")
+        """Wait for the live Download control and download the file once.
 
-        # Wait for processing popup. Each candidate carries its own
-        # has-text marker (e.g. ``.v-window:has-text("Processing")``) and the
-        # popup element itself matches it, so candidates are searched from the
-        # page - not from a fixed ``_popup()`` locator.
-        for selector in self.PROCESSING_POPUP_SELECTORS:
-            try:
-                await page.locator(selector).first.wait_for(
-                    state="visible", timeout=30000
-                )
-                logger.debug("Processing popup detected with selector: %s", selector)
-                break
-            except PlaywrightTimeoutError:
-                continue
+        The control wait is bounded to 15 seconds: the exact role-based
+        Download selector is awaited directly with a single 15000 ms
+        visibility wait. No sequential processing-popup or per-selector
+        waits run first, so the post-Confirm wait can never balloon toward
+        two minutes. If the button does not appear in time, ``DownloadError``
+        is raised.
 
-        # Wait for download button to become available
-        download_button = None
-        for selector in self.DOWNLOAD_BUTTON_SELECTORS:
-            try:
-                btn = self._popup(page).locator(selector).first
-                await btn.wait_for(state="visible", timeout=60000)
-                download_button = btn
-                logger.debug("Download button available with selector: %s", selector)
-                break
-            except PlaywrightTimeoutError:
-                continue
+        The actual download operation is excluded from that bound: the
+        ``download`` event is awaited within one bounded
+        ``DOWNLOAD_TIMEOUT_MS`` window. The Download control is clicked
+        exactly once - a re-click while the first server-side export may
+        still be running would start a second export (duplicate download),
+        so the click is never repeated. If the event does not arrive in
+        time, ``DownloadError`` is raised instead.
+        """
+        logger.debug("Waiting for Download control and file download")
 
-        if not download_button:
-            # Fallback: wait a bit and try again
-            await page.wait_for_timeout(10000)
-            for selector in self.DOWNLOAD_BUTTON_SELECTORS:
-                try:
-                    btn = self._popup(page).locator(selector).first
-                    if await btn.count() > 0:
-                        download_button = btn
-                        break
-                except Exception:
-                    continue
+        download_button = (
+            page.locator(self.DOWNLOAD_BUTTON_SELECTORS[0])
+            .filter(visible=True)
+            .first
+        )
+        try:
+            await download_button.wait_for(state="visible", timeout=15000)
+        except PlaywrightTimeoutError as e:
+            raise DownloadError(
+                "Download button did not appear within 15 seconds after Confirm"
+            ) from e
+        logger.debug("Download control visible after processing")
 
-        if not download_button:
-            raise DownloadError("Download button never became available")
-
-        # Handle download
-        async with page.expect_download(timeout=60000) as download_info:
-            await download_button.click()
+        # Exactly one click. A second click while the first server-side
+        # export may still be running would trigger a duplicate download,
+        # so the click is never retried - the single bounded wait below is
+        # the only window the download event gets.
+        try:
+            async with page.expect_download(
+                timeout=self.DOWNLOAD_TIMEOUT_MS
+            ) as download_info:
+                await download_button.click()
+        except PlaywrightTimeoutError as e:
+            raise DownloadError(
+                "Download did not complete within the bounded window",
+                f"timeout_ms={self.DOWNLOAD_TIMEOUT_MS}",
+            ) from e
 
         download = await download_info.value
         suggested_filename = download.suggested_filename
 
         if not suggested_filename.lower().endswith(".xlsx"):
-            logger.warning("Unexpected download filename: %s", suggested_filename)
+            logger.warning(
+                "Unexpected download filename: %s", suggested_filename
+            )
 
         # Generate timestamp-based filename
         final_path = generate_export_filename(
@@ -477,7 +690,9 @@ class ProductsExporter:
         )
         suffix = 1
         while final_path.exists():
-            final_path = final_path.with_name(f"{final_path.stem}_{suffix}{final_path.suffix}")
+            final_path = final_path.with_name(
+                f"{final_path.stem}_{suffix}{final_path.suffix}"
+            )
             suffix += 1
 
         await download.save_as(final_path)
@@ -494,15 +709,41 @@ class ProductsExporter:
         return final_path
 
     async def _close_export_popup(self, page: Page) -> None:
-        """Close the export popup after download."""
+        """Close the export popup after download (best-effort).
+
+        The dialog may not be closable yet immediately after the download
+        completes, so the close is retried in ``CLOSE_MAX_ATTEMPTS`` bounded
+        attempts with a short delay. Only visible controls are considered -
+        Vaadin renders hidden template duplicates (the same re-render
+        behavior as the export menu), so ``filter(visible=True)`` precedes
+        ``.first``. Failure is only a warning: the export already succeeded.
+        """
         logger.debug("Closing export popup")
-        for selector in self.CLOSE_BUTTON_SELECTORS:
-            try:
-                button = self._popup(page).locator(selector).first
-                if await button.count() > 0:
-                    await button.click()
-                    logger.debug("Closed export popup using selector: %s", selector)
-                    return
-            except Exception:
-                continue
+        for attempt in range(1, self.CLOSE_MAX_ATTEMPTS + 1):
+            for selector in self.CLOSE_BUTTON_SELECTORS:
+                try:
+                    button = (
+                        self._popup(page)
+                        .locator(selector)
+                        .filter(visible=True)
+                        .first
+                    )
+                    if await button.count() > 0:
+                        await button.click()
+                        logger.debug(
+                            "Closed export popup using selector: %s (attempt %d/%d)",
+                            selector,
+                            attempt,
+                            self.CLOSE_MAX_ATTEMPTS,
+                        )
+                        return
+                except Exception:
+                    continue
+            if attempt < self.CLOSE_MAX_ATTEMPTS:
+                logger.debug(
+                    "Close button not found (attempt %d/%d); retrying",
+                    attempt,
+                    self.CLOSE_MAX_ATTEMPTS,
+                )
+                await page.wait_for_timeout(self.CLOSE_RETRY_DELAY_MS)
         logger.warning("Could not find close button for export popup")

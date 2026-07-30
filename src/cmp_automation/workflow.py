@@ -22,17 +22,26 @@ logger = logging.getLogger(__name__)
 class CMPAutomationWorkflow:
     """Orchestrates the complete CMP automation workflow."""
 
-    def __init__(self, config: Config, headed: bool = False, dry_run: bool = False):
+    def __init__(
+        self,
+        config: Config,
+        headed: bool = False,
+        dry_run: bool = False,
+        diagnose_export: bool = False,
+        diagnose_auth: bool = False,
+    ):
         self.config = config
         self.headed = headed
         self.dry_run = dry_run
+        self.diagnose_export = diagnose_export
+        self.diagnose_auth = diagnose_auth
         self.browser_manager: BrowserManager | None = None
         self.page: Page | None = None
 
         # Initialize components
         self.mailbox = MailboxClient(config)
-        self.login = CMPLogin(config, self.mailbox)
-        self.products_exporter = ProductsExporter(config)
+        self.login = CMPLogin(config, self.mailbox, diagnose_auth=diagnose_auth)
+        self.products_exporter = ProductsExporter(config, diagnose_export=diagnose_export)
         self.dashboard_capture = DashboardCapture(config)
         self.excel_generator = ExcelReportGenerator(config)
 
@@ -95,10 +104,18 @@ async def run_workflow(
     config: Config | None = None,
     headed: bool = False,
     dry_run: bool = False,
+    diagnose_export: bool = False,
+    diagnose_auth: bool = False,
 ) -> Path:
     """Convenience function to run the workflow."""
     if config is None:
         config = load_config()
 
-    workflow = CMPAutomationWorkflow(config, headed=headed, dry_run=dry_run)
+    workflow = CMPAutomationWorkflow(
+        config,
+        headed=headed,
+        dry_run=dry_run,
+        diagnose_export=diagnose_export,
+        diagnose_auth=diagnose_auth,
+    )
     return await workflow.run()

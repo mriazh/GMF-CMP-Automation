@@ -6,7 +6,7 @@ import pytest
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from cmp_automation.config import Config
-from cmp_automation.exceptions import ProductsExportError
+from cmp_automation.exceptions import DownloadError, ProductsExportError
 from cmp_automation.products import ProductsExporter
 
 PRODUCTS_URL = "https://ep.iotcc.telkomsel.com/#!products"
@@ -262,6 +262,77 @@ class TestDomSummarySafety:
             assert selector in js
 
 
+class TestMenuDomDiagnosticSafety:
+    """Menu diagnostics are structural-only and never leak body text."""
+
+    def test_diagnostic_js_never_reads_element_text(self, exporter):
+        js = exporter._MENU_DIAGNOSTIC_JS
+        assert "textContent" not in js
+        assert "innerText" not in js
+        assert "innerHTML" not in js
+        # The in-page script uses real CSS only - no Playwright pseudo-classes.
+        assert ":has-text" not in js
+
+    def test_confirm_diagnostic_js_never_reads_element_text(self, exporter):
+        js = exporter._CONFIRM_DIAGNOSTIC_JS
+        assert "textContent" not in js
+        assert "innerText" not in js
+        assert "innerHTML" not in js
+        assert ":has-text" not in js
+        assert "#confirmdialog-ok-button" in js
+
+    @pytest.mark.asyncio
+    async def test_confirm_diagnostic_formats_counts(self, exporter):
+        page = AsyncMock()
+        page.evaluate = AsyncMock(
+            return_value={
+                "confirmButtonTotal": 1,
+                "confirmButtonVisible": 1,
+                "windows": 0,
+                "windowsVisible": 0,
+                "dialogs": 0,
+                "dialogsVisible": 0,
+                "confirmDialogs": 1,
+                "confirmDialogsVisible": 1,
+            }
+        )
+        summary = await exporter._confirm_dom_diagnostic(page)
+        assert "confirmButtonTotal=1" in summary
+        assert "confirmButtonVisible=1" in summary
+
+    @pytest.mark.asyncio
+    async def test_diagnostic_formats_counts(self, exporter):
+        page = AsyncMock()
+        page.evaluate = AsyncMock(
+            return_value={
+                "captionTotal": 2,
+                "captionVisible": 1,
+                "menus": 1,
+                "menusVisible": 1,
+                "windows": 0,
+                "windowsVisible": 0,
+                "dialogs": 0,
+                "dialogsVisible": 0,
+            }
+        )
+        summary = await exporter._menu_dom_diagnostic(page)
+        assert "captionTotal=2" in summary
+        assert "captionVisible=1" in summary
+
+    @pytest.mark.asyncio
+    async def test_non_dict_result_is_safe(self, exporter):
+        page = AsyncMock()
+        page.evaluate = AsyncMock(return_value="leak attempt")
+        assert (
+            await exporter._menu_dom_diagnostic(page)
+            == "Unable to retrieve DOM diagnostic"
+        )
+        assert (
+            await exporter._confirm_dom_diagnostic(page)
+            == "Unable to retrieve DOM diagnostic"
+        )
+
+
 class TestExportFlowSelectors:
     """Exact live DOM selectors are primary in the export flow."""
 
@@ -427,10 +498,24 @@ class TestExportMenuInteraction:
     async def test_opens_menu_via_exact_menubar_selector(self, exporter):
         page = AsyncMock()
         locator = Mock()
-        locator.first.count = AsyncMock(return_value=1)
-        locator.first.click = AsyncMock()
-        locator.first.wait_for = AsyncMock()
-        page.locator = Mock(return_value=locator)
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+
+        # The popup container check uses a separate locator path: the
+        # production code calls ``page.locator(...).filter(visible=True).count()``.
+        popup_locator = Mock()
+        popup_filtered = Mock()
+        popup_filtered.count = AsyncMock(return_value=1)
+        popup_locator.filter = Mock(return_value=popup_filtered)
+
+        def fake_locator(selector):
+            if ".v-menubar-popup" in selector:
+                return popup_locator
+            return locator
+
+        page.locator = Mock(side_effect=fake_locator)
 
         await exporter._open_export_menu(page)
 
@@ -442,17 +527,45 @@ class TestExportMenuInteraction:
         assert page.locator.call_args_list[1].args[0] == (
             'span.v-menubar-menuitem-caption:has(span.v-icon.IcoMoon-Lindua):has-text("To xlsx")'
         )
-        locator.first.click.assert_awaited_once()
-        locator.first.wait_for.assert_awaited_once_with(state="visible", timeout=10000)
+        # After the submenu caption wait: verify the popup container exists.
+        assert page.locator.call_args_list[2].args[0] == (
+            '.v-menubar-popup, .v-menubar-submenu, [role="menu"]'
+        )
+        # The popup container check is filtered to visible before counting.
+        popup_locator.filter.assert_called_once_with(visible=True)
+        # Menu item and submenu are both filtered to visible before .first.
+        assert locator.filter.call_args_list == [call(visible=True), call(visible=True)]
+        # Menu item: 10s. Submenu (slow-portal render, same budget as confirm): 30s.
+        assert filtered.first.wait_for.await_count == 2
+        assert filtered.first.wait_for.await_args_list[0] == call(
+            state="visible", timeout=10000
+        )
+        assert filtered.first.wait_for.await_args_list[1] == call(
+            state="visible", timeout=30000
+        )
+        filtered.first.click.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_submenu_does_not_require_window_or_dialog(self, exporter):
         page = AsyncMock()
         locator = Mock()
-        locator.first.count = AsyncMock(return_value=1)
-        locator.first.click = AsyncMock()
-        locator.first.wait_for = AsyncMock()
-        page.locator = Mock(return_value=locator)
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+
+        # The popup container check uses a separate locator path.
+        popup_locator = Mock()
+        popup_filtered = Mock()
+        popup_filtered.count = AsyncMock(return_value=1)
+        popup_locator.filter = Mock(return_value=popup_filtered)
+
+        def fake_locator(selector):
+            if ".v-menubar-popup" in selector:
+                return popup_locator
+            return locator
+
+        page.locator = Mock(side_effect=fake_locator)
 
         await exporter._open_export_menu(page)
 
@@ -461,10 +574,49 @@ class TestExportMenuInteraction:
             assert "dialog" not in c.args[0]
 
     @pytest.mark.asyncio
+    async def test_menu_lookup_filters_visible_before_first(self, exporter):
+        """Hidden Vaadin duplicates: .first is only reached after visible=True."""
+        page = AsyncMock()
+        locator = Mock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+
+        # The popup container check uses a separate locator path.
+        popup_locator = Mock()
+        popup_filtered = Mock()
+        popup_filtered.count = AsyncMock(return_value=1)
+        popup_locator.filter = Mock(return_value=popup_filtered)
+
+        def fake_locator(selector):
+            if ".v-menubar-popup" in selector:
+                return popup_locator
+            return locator
+
+        page.locator = Mock(side_effect=fake_locator)
+
+        await exporter._open_export_menu(page)
+
+        # Both the menu item and the submenu lookups filter visible=True.
+        assert locator.filter.call_count == 2
+        for c in locator.filter.call_args_list:
+            assert c == call(visible=True)
+        # The popup container check is also filtered to visible.
+        popup_locator.filter.assert_called_once_with(visible=True)
+        # All interactions go through the filtered locator, never raw .first.
+        assert locator.first.wait_for.call_count == 0
+        assert locator.first.click.call_count == 0
+
+    @pytest.mark.asyncio
     async def test_menu_not_found_raises(self, exporter):
         page = AsyncMock()
         locator = Mock()
-        locator.first.count = AsyncMock(return_value=0)
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock(
+            side_effect=PlaywrightTimeoutError("menu never visible")
+        )
+        locator.filter = Mock(return_value=filtered)
         page.locator = Mock(return_value=locator)
 
         with pytest.raises(ProductsExportError, match="Could not find export menu button"):
@@ -478,11 +630,12 @@ class TestExportMenuInteraction:
         # button" fallback message.
         page = AsyncMock()
         locator = Mock()
-        locator.first.count = AsyncMock(return_value=1)
-        locator.first.click = AsyncMock()
-        locator.first.wait_for = AsyncMock(
-            side_effect=PlaywrightTimeoutError("submenu never appeared")
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock(
+            side_effect=[None, PlaywrightTimeoutError("submenu never appeared")]
         )
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
         page.locator = Mock(return_value=locator)
 
         with pytest.raises(
@@ -490,18 +643,165 @@ class TestExportMenuInteraction:
             match="Export submenu \\(To xlsx\\) did not become visible",
         ):
             await exporter._open_export_menu(page)
-        locator.first.click.assert_awaited_once()
+        filtered.first.click.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_menu_container_false_positive_detected(self, exporter):
+        """Caption visible but no popup container: static template, not a real submenu.
+
+        Live-observed: a visible caption element belonging to a hidden Vaadin
+        template satisfies the ``wait_for(visible=True)`` check, but the
+        interactive submenu popup (``.v-menubar-popup``) never opened. Clicking
+        the caption in that state is a no-op. The visible popup-container
+        check catches this false positive before the XLSX selection proceeds.
+        """
+        page = AsyncMock()
+        locator = Mock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()  # caption wait succeeds
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+
+        # The popup container check: filter(visible=True) finds zero visible.
+        popup_locator = Mock()
+        popup_filtered = Mock()
+        popup_filtered.count = AsyncMock(return_value=0)
+        popup_locator.filter = Mock(return_value=popup_filtered)
+
+        def fake_locator(selector):
+            if ".v-menubar-popup" in selector:
+                return popup_locator
+            return locator
+
+        page.locator = Mock(side_effect=fake_locator)
+        # The diagnostic runs inside the error path and must not crash.
+        page.evaluate = AsyncMock(
+            return_value={
+                "captionTotal": 3,
+                "captionVisible": 3,
+                "popupContainer": 0,
+                "popupContainerVisible": 0,
+                "menus": 0,
+                "menusVisible": 0,
+                "windows": 0,
+                "windowsVisible": 0,
+                "dialogs": 0,
+                "dialogsVisible": 0,
+            }
+        )
+
+        with pytest.raises(
+            ProductsExportError,
+            match="no submenu container is open",
+        ):
+            await exporter._open_export_menu(page)
+
+        # The menu item was clicked (the false-positive check catches the
+        # problem after the click but before the caller can proceed).
+        filtered.first.click.assert_awaited_once()
+        # The popup container was checked via visible filter exactly once.
+        popup_locator.filter.assert_called_once_with(visible=True)
+        assert popup_filtered.count.await_count == 1
+    @pytest.mark.asyncio
+    async def test_menu_container_hidden_popup_rejected(self, exporter):
+        """Popup exists in DOM but is hidden/off-screen: the visible check rejects it.
+
+        A hidden ``.v-menubar-popup`` element (e.g. a Vaadin template that
+        has not been shown) satisfies ``locator.count()`` but NOT
+        ``locator.filter(visible=True).count()``. The guard must reject
+        this case to prevent clicking a non-interactive caption.
+        """
+        page = AsyncMock()
+        locator = Mock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()  # caption wait succeeds
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+
+        # The popup locator exists in DOM but is not visible.
+        popup_locator = Mock()
+        popup_filtered = Mock()
+        popup_filtered.count = AsyncMock(return_value=0)  # 0 visible
+        popup_locator.filter = Mock(return_value=popup_filtered)
+
+        def fake_locator(selector):
+            if ".v-menubar-popup" in selector:
+                return popup_locator
+            return locator
+
+        page.locator = Mock(side_effect=fake_locator)
+        page.evaluate = AsyncMock(
+            return_value={
+                "captionTotal": 3,
+                "captionVisible": 3,
+                "popupContainer": 1,
+                "popupContainerVisible": 0,
+                "menus": 1,
+                "menusVisible": 0,
+                "windows": 0,
+                "windowsVisible": 0,
+                "dialogs": 0,
+                "dialogsVisible": 0,
+            }
+        )
+
+        with pytest.raises(
+            ProductsExportError,
+            match="no submenu container is open",
+        ):
+            await exporter._open_export_menu(page)
+
+        # The visible filter was applied — hidden popup did NOT pass.
+        popup_locator.filter.assert_called_once_with(visible=True)
+        assert popup_filtered.count.await_count == 1
+        # The click happened but the guard caught the problem.
+        filtered.first.click.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_duplicate_click_on_false_positive(self, exporter):
+        """When the false-positive is detected, only one click was dispatched.
+
+        The click on the menu item happens before the popup-container check,
+        but the error propagates immediately — no retry or re-click occurs.
+        """
+        page = AsyncMock()
+        locator = Mock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+
+        popup_locator = Mock()
+        popup_filtered = Mock()
+        popup_filtered.count = AsyncMock(return_value=0)
+        popup_locator.filter = Mock(return_value=popup_filtered)
+
+        def fake_locator(selector):
+            if ".v-menubar-popup" in selector:
+                return popup_locator
+            return locator
+
+        page.locator = Mock(side_effect=fake_locator)
+        page.evaluate = AsyncMock(return_value={})
+
+        with pytest.raises(ProductsExportError):
+            await exporter._open_export_menu(page)
+
+        # Exactly one click — no duplicate, no retry.
+        assert filtered.first.click.await_count == 1
 
 
 class TestXlsxSelection:
-    """To xlsx is found page-wide and waited for before clicking."""
+    """To xlsx is found page-wide, visible-filtered, and waited for."""
 
     @pytest.mark.asyncio
     async def test_selects_xlsx_via_exact_caption_selector(self, exporter):
         page = AsyncMock()
         locator = Mock()
-        locator.first.wait_for = AsyncMock()
-        locator.first.click = AsyncMock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
         page.locator = Mock(return_value=locator)
 
         await exporter._select_xlsx_export(page)
@@ -510,40 +810,138 @@ class TestXlsxSelection:
         assert page.locator.call_args_list[0].args[0] == (
             'span.v-menubar-menuitem-caption:has(span.v-icon.IcoMoon-Lindua):has-text("To xlsx")'
         )
-        locator.first.wait_for.assert_awaited_once_with(state="visible", timeout=10000)
-        locator.first.click.assert_awaited_once()
+        # The exact caption is filtered to visible before .first.
+        locator.filter.assert_called_once_with(visible=True)
+        filtered.first.wait_for.assert_awaited_once_with(state="visible", timeout=10000)
+
+    @pytest.mark.asyncio
+    async def test_xlsx_lookup_filters_visible_before_first(self, exporter):
+        """The live submenu item is only ever touched through the visible filter."""
+        page = AsyncMock()
+        locator = Mock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+        page.locator = Mock(return_value=locator)
+
+        await exporter._select_xlsx_export(page)
+
+        locator.filter.assert_called_once_with(visible=True)
+        assert locator.first.wait_for.call_count == 0
+        assert locator.first.click.call_count == 0
 
     @pytest.mark.asyncio
     async def test_force_click_used_first_for_submenu_item(self, exporter):
         """The caption never satisfies actionability stability, so force first."""
         page = AsyncMock()
         locator = Mock()
-        locator.first.wait_for = AsyncMock()
-        locator.first.click = AsyncMock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
         page.locator = Mock(return_value=locator)
 
         await exporter._select_xlsx_export(page)
 
         # The very first click attempt is the force click: normal clicks time
         # out on the re-rendering submenu and let the menu close meanwhile.
-        assert locator.first.click.call_args_list[0] == call(force=True)
+        assert filtered.first.click.call_args_list[0] == call(force=True)
 
     @pytest.mark.asyncio
     async def test_synthetic_click_last_resort(self, exporter):
         """If the force click cannot land, a synthetic click is dispatched."""
         page = AsyncMock()
         locator = Mock()
-        locator.first.wait_for = AsyncMock()
-        locator.first.click = AsyncMock(
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()
+        filtered.first.click = AsyncMock(
             side_effect=RuntimeError("element is not attached")
         )
-        locator.first.evaluate = AsyncMock()
+        filtered.first.evaluate = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
         page.locator = Mock(return_value=locator)
 
         await exporter._select_xlsx_export(page)
 
-        assert locator.first.click.call_args_list[0] == call(force=True)
-        locator.first.evaluate.assert_awaited_once_with("el => el.click()")
+        assert filtered.first.click.call_args_list[0] == call(force=True)
+        filtered.first.evaluate.assert_awaited_once_with("el => el.click()")
+
+    @pytest.mark.asyncio
+    async def test_primary_xlsx_selector_retried_after_rerender(self, exporter):
+        """Vaadin re-render race: the exact selector fails once, then succeeds.
+
+        Live-observed: the same caption is visible one moment and detached the
+        next while the submenu re-renders. The primary selection must be
+        retried in bounded attempts with a fresh locator, not given up after
+        a single failure.
+        """
+        page = AsyncMock()
+        locator = Mock()
+        filtered = Mock()
+        # Attempt 1 times out mid re-render; attempt 2 sees the caption.
+        filtered.first.wait_for = AsyncMock(
+            side_effect=[
+                PlaywrightTimeoutError("submenu re-rendering"),
+                None,
+            ]
+        )
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+        page.locator = Mock(return_value=locator)
+        # The structural diagnostic runs inside the retry path and must not
+        # crash the loop; it reports counts only.
+        page.evaluate = AsyncMock(return_value={})
+
+        await exporter._select_xlsx_export(page)
+
+        assert filtered.first.wait_for.await_count == 2
+        assert filtered.first.click.await_count == 1
+        # Each attempt builds a fresh locator (page.locator called per attempt).
+        assert page.locator.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_primary_xlsx_selector_gives_up_after_attempts(self, exporter):
+        """Persistent re-render failure falls through to the fallback loop."""
+        page = AsyncMock()
+        locator = Mock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock(
+            side_effect=PlaywrightTimeoutError("never visible")
+        )
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+        page.locator = Mock(return_value=locator)
+        # No visible popup fallback candidates either. The fallback chain is
+        # ``_popup(page).locator(sel).filter(visible=True).first`` - the
+        # visible filter precedes .first (same Vaadin discipline as primary).
+        popup = Mock()
+        popup_filtered = Mock()
+        popup_filtered.first.count = AsyncMock(return_value=0)
+        popup.locator.return_value.filter = Mock(return_value=popup_filtered)
+        popup_locator = Mock()
+        popup_locator.last = popup
+        page.locator.return_value = locator
+        # Distinguish the primary lookup from the popup lookup: the popup
+        # selector is what _popup() builds.
+        def popup_locator_side_effect(selector):
+            if selector.startswith(".v-window:visible"):
+                return popup_locator
+            return locator
+
+        page.locator = Mock(side_effect=popup_locator_side_effect)
+
+        with pytest.raises(ProductsExportError, match="Could not find XLSX export option"):
+            await exporter._select_xlsx_export(page)
+
+        assert filtered.first.wait_for.await_count == 3  # XLSX_SELECT_ATTEMPTS
+        assert filtered.first.click.await_count == 0
+        # Every fallback candidate was filtered to visible before .first.
+        assert popup.locator.return_value.filter.call_count == len(
+            exporter.EXPORT_XLSX_SELECTORS
+        ) - 1
+        for c in popup.locator.return_value.filter.call_args_list:
+            assert c == call(visible=True)
 
 
 class TestConfirmExport:
@@ -564,7 +962,9 @@ class TestConfirmExport:
 
         # The id-based primary is searched page-wide, not scoped to popup.
         assert page.locator.call_args_list[0].args[0] == "#confirmdialog-ok-button"
-        locator.first.wait_for.assert_awaited_once_with(state="visible", timeout=15000)
+        # 30s budget: the dialog renders after a server round-trip that can
+        # take tens of seconds on a slow portal.
+        locator.first.wait_for.assert_awaited_once_with(state="visible", timeout=30000)
         locator.first.click.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -595,7 +995,13 @@ class TestConfirmExport:
         )
         locator.first.click = AsyncMock()
 
+        # Fallback candidates are searched in the popup with the visible
+        # filter before .first (same Vaadin discipline as the primary wait).
         popup = Mock()
+        filtered = Mock()
+        filtered.first.count = AsyncMock(return_value=0)
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
         popup.last.locator = Mock(return_value=locator)
 
         def fake_locator(selector):
@@ -608,24 +1014,50 @@ class TestConfirmExport:
         with pytest.raises(ProductsExportError, match="Confirm control was not found"):
             await exporter._confirm_export(page)
         locator.first.click.assert_not_called()
+        # Fallback candidates were filtered to visible before .first.
+        locator.filter.assert_called_with(visible=True)
+
+    @pytest.mark.asyncio
+    async def test_confirm_dialog_retried_when_slow_to_render(self, exporter):
+        """The dialog is a pure server response; a bounded re-wait is safe.
+
+        Live-observed: on a degraded portal the confirm dialog can take well
+        over 30s to render. Re-waiting (without any re-click) is harmless and
+        self-heals the slow-response case.
+        """
+        page = AsyncMock()
+        locator = Mock()
+        locator.first.count = AsyncMock(return_value=1)
+        # Attempt 1 times out; attempt 2 sees the dialog.
+        locator.first.wait_for = AsyncMock(
+            side_effect=[PlaywrightTimeoutError("dialog slow"), None]
+        )
+        locator.first.click = AsyncMock()
+        page.locator = Mock(return_value=locator)
+        page.evaluate = AsyncMock(return_value={})
+
+        await exporter._confirm_export(page)
+
+        assert locator.first.wait_for.await_count == 2
+        for c in locator.first.wait_for.await_args_list:
+            assert c == call(state="visible", timeout=30000)
+        locator.first.click.assert_awaited_once()
 
 
 class TestDownloadFlow:
-    """Download uses the role-based primary selector and validates XLSX."""
+    """Download: single 15s control wait + one click + one bounded event window."""
 
     @pytest.mark.asyncio
-    async def test_download_via_role_button_selector(self, exporter, tmp_path, monkeypatch):
+    async def test_download_via_role_button_selector(
+        self, exporter, tmp_path, monkeypatch
+    ):
         page = AsyncMock()
-        popup = Mock()
-        # Processing-popup loop searches each candidate from the page, so the
-        # returned locator needs an async wait_for on .first.
-        popup.first.wait_for = AsyncMock()
-        popup.last.wait_for = AsyncMock()
-        btn_loc = Mock()
-        btn_loc.first.wait_for = AsyncMock()
-        btn_loc.first.click = AsyncMock()
-        popup.last.locator = Mock(return_value=btn_loc)
-        page.locator = Mock(return_value=popup)
+        locator = Mock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+        page.locator = Mock(return_value=locator)
 
         target = tmp_path / "sim_export_20260718_120000.xlsx"
 
@@ -663,13 +1095,307 @@ class TestDownloadFlow:
         result = await exporter._wait_for_download(page)
 
         assert result == target
-        # Processing-popup loop searches each candidate from the page using
-        # the selector variable (not a fixed _popup() locator).
+        # The exact role-based Download selector is searched page-wide.
         assert page.locator.call_args_list[0].args[0] == (
-            exporter.PROCESSING_POPUP_SELECTORS[0]
-        )
-        # First download selector tried is the exact role-based one.
-        assert popup.last.locator.call_args_list[0].args[0] == (
             '[role="button"]:has-text("Download")'
         )
-        btn_loc.first.click.assert_awaited_once()
+        # Filtered to visible elements so a hidden template button cannot
+        # shadow the real live Download control.
+        locator.filter.assert_called_once_with(visible=True)
+        # One visibility wait, 15000 ms max - no sequential 30/60s loops.
+        filtered.first.wait_for.assert_awaited_once_with(
+            state="visible", timeout=15000
+        )
+        filtered.first.click.assert_awaited_once()
+        # Exactly one download window with the bounded single-window timeout.
+        page.expect_download.assert_called_once_with(
+            timeout=exporter.DOWNLOAD_TIMEOUT_MS
+        )
+
+    @pytest.mark.asyncio
+    async def test_download_timeout_raises_download_error(self, exporter):
+        """If Download does not appear within 15s, DownloadError is raised."""
+        page = AsyncMock()
+        locator = Mock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock(
+            side_effect=PlaywrightTimeoutError("Download never appeared")
+        )
+        locator.filter = Mock(return_value=filtered)
+        page.locator = Mock(return_value=locator)
+
+        with pytest.raises(
+            DownloadError,
+            match="Download button did not appear within 15 seconds",
+        ):
+            await exporter._wait_for_download(page)
+
+        filtered.first.wait_for.assert_awaited_once_with(
+            state="visible", timeout=15000
+        )
+
+    def test_no_sequential_waits_remain(self, exporter):
+        """Only the single 15s Download wait stays on the critical path."""
+        import inspect
+
+        source = inspect.getsource(ProductsExporter._wait_for_download)
+        assert "PROCESSING_POPUP_SELECTORS" not in source
+        # Exactly one locator wait (``.wait_for(``) - the method name
+        # ``_wait_for_download`` itself also contains "wait_for". The only
+        # wait is the 15s visibility bound on the Download control; the
+        # download event gets a single bounded ``expect_download`` window
+        # with exactly one click (no re-click, no re-verify, no retry loop).
+        assert source.count(".wait_for(") == 1
+        assert "timeout=15000" in source
+        assert "timeout=5000" not in source
+        assert "DOWNLOAD_MAX_ATTEMPTS" not in source
+        assert "expect_download" in source
+
+    @pytest.mark.asyncio
+    async def test_download_single_window_timeout_no_reclick(self, exporter):
+        """A slow server must NOT trigger a second click (duplicate download).
+
+        The click is issued exactly once; if the ``download`` event does not
+        arrive within the single bounded window, ``DownloadError`` is raised
+        without re-clicking - a re-click while the first server-side export
+        may still be running would start a second export.
+        """
+        page = AsyncMock()
+        locator = Mock()
+        filtered = Mock()
+        filtered.first.wait_for = AsyncMock()
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+        page.locator = Mock(return_value=locator)
+
+        download_info = Mock()
+        download_info.value = None
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=download_info)
+        cm.__aexit__ = AsyncMock(
+            side_effect=PlaywrightTimeoutError("download event never fired")
+        )
+        page.expect_download = Mock(return_value=cm)
+
+        with pytest.raises(
+            DownloadError,
+            match="Download did not complete within the bounded window",
+        ):
+            await exporter._wait_for_download(page)
+
+        # Exactly one click and one bounded window - never a re-click.
+        assert filtered.first.click.await_count == 1
+        page.expect_download.assert_called_once_with(
+            timeout=exporter.DOWNLOAD_TIMEOUT_MS
+        )
+        assert filtered.first.wait_for.await_count == 1
+
+
+class TestDiagnoseExportSafety:
+    """Opt-in network diagnostic attaches/detaches safely on all failure paths."""
+
+    @pytest.mark.asyncio
+    async def test_diagnostic_detached_on_open_menu_failure(self, exporter):
+        """If _open_export_menu raises, the diagnostic is still detached.
+
+        The diagnostic is attached before _open_export_menu (to capture the
+        menu-opening network traffic). If the menu-open fails (e.g. false
+        positive), the finally block must detach and summarize it.
+        """
+        exporter.diagnose_export = True
+        page = AsyncMock()
+        # NetworkDiag.attach()/detach() call page.on/remove_listener
+        # synchronously, so override the inherited AsyncMock with a regular
+        # Mock to avoid RuntimeWarning about unawaited coroutines.
+        page.on = Mock()
+        page.remove_listener = Mock()
+        # Page is already at the products URL (skip navigation).
+        page.url = PRODUCTS_URL
+
+        # _wait_for_table: the combined selector filter().first.wait_for
+        # must succeed immediately.
+        table_locator = Mock()
+        table_filtered = Mock()
+        table_filtered.first.wait_for = AsyncMock()
+        table_filtered.first.is_visible = AsyncMock(return_value=True)
+        table_locator.filter = Mock(return_value=table_filtered)
+
+        # _sort_by_billing_status: table.locator returns a table locator
+        # whose first.count returns 0 (no table found) — this would raise,
+        # so we need the sort to succeed.  Instead, make the table locator
+        # find the header and sort it.
+        header_locator = Mock()
+        header_locator.first.count = AsyncMock(return_value=1)
+        header_locator.first.click = AsyncMock()
+        th_locator = Mock()
+        th_locator.get_attribute = AsyncMock(
+            side_effect=lambda name: (
+                "v-grid-cell sortable sort-asc" if name == "class" else None
+            )
+        )
+        header_locator.first.locator = Mock(return_value=th_locator)
+        table_locator.first.locator = Mock(return_value=header_locator)
+        table_locator.first.count = AsyncMock(return_value=1)
+
+        # _open_export_menu: menu button never visible.
+        menu_locator = Mock()
+        menu_filtered = Mock()
+        menu_filtered.first.wait_for = AsyncMock(
+            side_effect=PlaywrightTimeoutError("menu never visible")
+        )
+        menu_locator.filter = Mock(return_value=menu_filtered)
+
+        def fake_locator(selector):
+            # Route: combined table selectors → table_locator
+            # menu selectors → menu_locator
+            if "v-menubar-menuitem" in selector and "IcoMoon-Ultimate" in selector:
+                return menu_locator
+            return table_locator
+
+        page.locator = Mock(side_effect=fake_locator)
+
+        with pytest.raises(ProductsExportError, match="Could not find export menu button"):
+            await exporter.export_products(page)
+
+        # The diagnostic was attached (page.on called) and then detached
+        # (page.remove_listener called) — no leak.
+        assert page.on.call_count >= 4  # 4 event listeners attached
+        assert page.remove_listener.call_count >= 4
+        assert exporter._network_diag is None
+
+    @pytest.mark.asyncio
+    async def test_diagnostic_not_attached_when_disabled(self, exporter):
+        """When diagnose_export is False, no listener activity occurs."""
+        exporter.diagnose_export = False
+        page = AsyncMock()
+        page.url = PRODUCTS_URL
+
+        # Same setup as above but diagnose_export is False.
+        table_locator = Mock()
+        table_filtered = Mock()
+        table_filtered.first.wait_for = AsyncMock()
+        table_filtered.first.is_visible = AsyncMock(return_value=True)
+        table_locator.filter = Mock(return_value=table_filtered)
+
+        header_locator = Mock()
+        header_locator.first.count = AsyncMock(return_value=1)
+        header_locator.first.click = AsyncMock()
+        th_locator = Mock()
+        th_locator.get_attribute = AsyncMock(
+            side_effect=lambda name: (
+                "v-grid-cell sortable sort-asc" if name == "class" else None
+            )
+        )
+        header_locator.first.locator = Mock(return_value=th_locator)
+        table_locator.first.locator = Mock(return_value=header_locator)
+        table_locator.first.count = AsyncMock(return_value=1)
+
+        menu_locator = Mock()
+        menu_filtered = Mock()
+        menu_filtered.first.wait_for = AsyncMock(
+            side_effect=PlaywrightTimeoutError("menu never visible")
+        )
+        menu_locator.filter = Mock(return_value=menu_filtered)
+
+        def fake_locator(selector):
+            if "v-menubar-menuitem" in selector and "IcoMoon-Ultimate" in selector:
+                return menu_locator
+            return table_locator
+
+        page.locator = Mock(side_effect=fake_locator)
+
+        with pytest.raises(ProductsExportError):
+            await exporter.export_products(page)
+
+        page.on.assert_not_called()
+        page.remove_listener.assert_not_called()
+
+
+class TestCloseExportPopup:
+    """Closing the export popup is best-effort: visible-first, bounded retries."""
+
+    def _make_page(self, count_result=1):
+        """Build a page whose popup returns a visible close candidate."""
+        page = AsyncMock()
+        popup = Mock()
+        locator = Mock()
+        filtered = Mock()
+        filtered.first.count = AsyncMock(return_value=count_result)
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+        popup_locator = Mock()
+        popup_locator.last = popup
+        popup.locator = Mock(return_value=locator)
+        page.locator = Mock(return_value=popup_locator)
+        page.wait_for_timeout = AsyncMock()
+        return page, popup, locator, filtered
+
+    @pytest.mark.asyncio
+    async def test_closes_via_visible_close_button(self, exporter):
+        """A visible close control is clicked on the first attempt."""
+        page, popup, locator, filtered = self._make_page()
+
+        await exporter._close_export_popup(page)
+
+        # Search happens inside the visible popup (window/dialog), not page-wide.
+        assert page.locator.call_args_list[0].args[0] == (
+            '.v-window:visible, [role="dialog"]:visible'
+        )
+        assert popup.locator.call_count >= 1
+        # The candidate is filtered to visible before .first.
+        assert locator.filter.call_args_list[0] == call(visible=True)
+        assert filtered.first.count.await_count == 1
+        filtered.first.click.assert_awaited_once()
+        # No retry needed.
+        assert page.wait_for_timeout.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_close_filters_visible_before_first(self, exporter):
+        """Hidden Vaadin duplicates: .first is only reached after visible=True."""
+        page, popup, locator, filtered = self._make_page()
+
+        await exporter._close_export_popup(page)
+
+        for c in locator.filter.call_args_list:
+            assert c == call(visible=True)
+        # All interactions go through the filtered locator, never raw .first.
+        assert locator.first.count.call_count == 0
+        assert locator.first.click.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_retries_then_warns_when_button_never_appears(self, exporter, caplog):
+        """No closable control: bounded retries with delays, then a warning."""
+        page, popup, locator, filtered = self._make_page(count_result=0)
+
+        with caplog.at_level("WARNING", logger="cmp_automation.products"):
+            await exporter._close_export_popup(page)
+
+        # Retried CLOSE_MAX_ATTEMPTS times with a delay between attempts.
+        assert page.wait_for_timeout.await_count == exporter.CLOSE_MAX_ATTEMPTS - 1
+        assert filtered.first.click.await_count == 0
+        assert "Could not find close button for export popup" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_recovers_when_close_button_appears_late(self, exporter):
+        """The dialog settles after download: a later attempt succeeds."""
+        page = AsyncMock()
+        popup = Mock()
+        locator = Mock()
+        filtered = Mock()
+        # First two count checks find nothing (dialog settling), third finds it.
+        filtered.first.count = AsyncMock(
+            side_effect=[0, 0, 0, 0, 0, 0, 0, 0, 1]
+        )
+        filtered.first.click = AsyncMock()
+        locator.filter = Mock(return_value=filtered)
+        popup_locator = Mock()
+        popup_locator.last = popup
+        popup.locator = Mock(return_value=locator)
+        page.locator = Mock(return_value=popup_locator)
+        page.wait_for_timeout = AsyncMock()
+
+        await exporter._close_export_popup(page)
+
+        # Succeeded on the third attempt: two delays, then a successful click.
+        assert filtered.first.click.await_count == 1
+        assert page.wait_for_timeout.await_count == 2

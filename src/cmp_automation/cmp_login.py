@@ -4,9 +4,11 @@ import logging
 from datetime import datetime
 from urllib.parse import urlparse
 
+from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
+from .auth_diag import AuthDiag
 from .config import Config
 from .exceptions import (
     AuthenticationError,
@@ -70,9 +72,54 @@ class CMPLogin:
         'button:has-text("Continue")',
     ]
 
-    def __init__(self, config: Config, mailbox: MailboxClient):
+    # Safe structural DOM diagnostic for the auth failure path: reports only
+    # element counts and tag/id/class/role summaries - never element text, so
+    # credentials, OTPs, or arbitrary page body text cannot leak into the
+    # raised error.
+    _AUTH_DIAGNOSTIC_JS = """() => {
+  const count = (sel) => document.querySelectorAll(sel).length;
+  const summarize = (sel, max) => {
+    const out = [];
+    for (const el of Array.from(document.querySelectorAll(sel)).slice(0, max)) {
+      const cls = typeof el.className === 'string'
+        ? el.className.trim().split(' ').filter(Boolean).join('.')
+        : '';
+      out.push(
+        el.tagName.toLowerCase() +
+        (el.id ? '#' + el.id : '') +
+        (cls ? '.' + cls : '') +
+        (el.getAttribute('role') ? '[role=' + el.getAttribute('role') + ']' : '')
+      );
+    }
+    return out;
+  };
+  return {
+    inputs: count('input'),
+    passwords: count('input[type="password"]'),
+    buttons: count('button'),
+    forms: count('form'),
+    grids: count('[role="grid"], .v-grid'),
+    windows: count('.v-window'),
+    dialogs: count('[role="dialog"]'),
+    bodyChildren: summarize('body > *', 10)
+  };
+}"""
+
+    def __init__(
+        self,
+        config: Config,
+        mailbox: MailboxClient,
+        diagnose_auth: bool = False,
+    ):
         self.config = config
         self.mailbox = mailbox
+        # Opt-in diagnostic only: passively records sanitized metadata (URL
+        # state categories, navigation events, structural DOM counts, network
+        # metadata) around the OTP submission / authentication verification
+        # (see ``AuthDiag``). It never changes workflow behavior - no retries,
+        # no reloads, no OTP resubmission - and is inactive unless
+        # ``--diagnose-auth`` is passed.
+        self.diagnose_auth = diagnose_auth
         self.workflow_start_time: datetime | None = None
 
     async def login(self, page: Page) -> None:
@@ -100,18 +147,86 @@ class CMPLogin:
         await self._wait_for_token_page(page)
 
         otp_token = await self._retrieve_otp()
-        await self._submit_token(page, otp_token.token)
-        await self._verify_authentication(page)
+
+        # Opt-in: attach the sanitized auth diagnostic immediately before the
+        # OTP submission so the submission's requests, the URL-state
+        # transitions through the CAS redirect / SPA mount, and the final DOM
+        # are captured. Detached (and summarized) after verification completes
+        # or fails - including on failure - so the diagnostic can tell whether
+        # the submission fired a request, the redirect happened, or the SPA
+        # never mounted. The diagnostic never touches the OTP value.
+        diag: AuthDiag | None = None
+        if self.diagnose_auth:
+            diag = AuthDiag(approved_host=self._approved_host())
+            await diag.attach(page)
+        try:
+            await self._submit_token(page, otp_token.token)
+            await self._verify_authentication(page)
+        finally:
+            if diag is not None:
+                await diag.detach()
+                logger.info("Post-OTP auth diagnostic: %s", diag.summary())
 
         logger.info("CMP login completed successfully")
 
     async def _navigate_to_login(self, page: Page) -> None:
-        """Navigate to CMP login page."""
+        """Navigate to CMP login page with a bounded retry.
+
+        The CAS login page is server-rendered, so ``domcontentloaded`` is the
+        readiness signal; ``networkidle`` can stall on background keep-alives
+        and time out even when the page is usable. Transient network failures
+        (``NS_ERROR_NET_TIMEOUT``, ``NS_ERROR_SOCKET_CREATE_FAILED``, ...) are
+        retried up to ``max_attempts`` times with a short delay, so the whole
+        navigation stays bounded. The credential fill that follows provides the
+        real page-readiness wait.
+        """
         logger.debug("Navigating to CMP login page")
-        try:
-            await page.goto(self.config.cmp_login_url, wait_until="networkidle")
-        except PlaywrightTimeoutError as e:
-            raise BrowserError("Timeout navigating to CMP login page", str(e)) from e
+        max_attempts = 3
+        retry_delay_ms = 2000
+        last_error_category: str | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await page.goto(self.config.cmp_login_url, wait_until="domcontentloaded")
+                return
+            except PlaywrightError as e:
+                # Only Playwright/browser-level failures are retried
+                # (PlaywrightTimeoutError plus network-level errors such as
+                # NS_ERROR_NET_TIMEOUT / NS_ERROR_SOCKET_CREATE_FAILED, which
+                # surface as the base Playwright Error). Arbitrary programming
+                # errors propagate immediately instead of being masked as a
+                # transient network failure.
+                #
+                # Only the error *category* (class name) is recorded, logged,
+                # and reported - never the raw exception message, which can
+                # embed the destination URL or page content.
+                last_error_category = type(e).__name__
+            if attempt < max_attempts:
+                logger.warning(
+                    "CMP login page navigation failed (attempt %d/%d) - %s; retrying",
+                    attempt,
+                    max_attempts,
+                    last_error_category,
+                )
+                try:
+                    await page.wait_for_timeout(retry_delay_ms)
+                except PlaywrightError:
+                    # The retry delay itself can fail when the page is closed
+                    # or the browser is dying. That must not escape as a raw
+                    # Playwright error: normalize to BrowserError with the
+                    # safe category already recorded. No further retries - a
+                    # page that cannot wait cannot navigate either.
+                    raise BrowserError(
+                        "Timeout navigating to CMP login page",
+                        f"last error category: {last_error_category}"
+                        if last_error_category
+                        else None,
+                    )
+        raise BrowserError(
+            "Timeout navigating to CMP login page",
+            f"last error category: {last_error_category}"
+            if last_error_category
+            else None,
+        )
 
     async def _fill_credentials(self, page: Page) -> None:
         """Fill username and password fields."""
@@ -210,6 +325,11 @@ class CMPLogin:
                 continue
         raise AuthenticationError("Could not find token submit button")
 
+    def _approved_host(self) -> str | None:
+        """Derive the approved portal host from the configured Products URL."""
+        parsed = urlparse(self.config.cmp_products_url)
+        return parsed.hostname
+
     def _is_portal_page(self, url: str, fragment: str) -> bool:
         """Strict portal URL validation: HTTPS, approved host, root path, exact fragment.
 
@@ -257,6 +377,18 @@ class CMPLogin:
         except Exception:
             return None
 
+    def _read_page_url(self, page: Page) -> str:
+        """Safely read ``page.url``; a closed/crashed page yields '<unavailable>'.
+
+        A raw Playwright error from the URL read must never escape the poll
+        loop or the final raise path - the bounded recovery and the final
+        ``AuthenticationError`` carry the normalized message instead.
+        """
+        try:
+            return page.url
+        except PlaywrightError:
+            return "<unavailable>"
+
     async def _is_authenticated(self, page: Page) -> bool:
         """Return true only for a strictly validated portal session.
 
@@ -281,23 +413,66 @@ class CMPLogin:
         SPA navigates to ``#!products``. The exact Products URL (HTTPS, approved
         host, root path, fragment ``!products``) is the authentication guarantee;
         no speculative DOM selectors are required.
+
+        The portal SPA occasionally fails to mount after the CAS redirect (blank
+        body at the root URL). Bounded page reloads are attempted before giving
+        up, so transient SPA boot failures self-heal; a sustained slow mount
+        (observed live: two consecutive 30-second windows both stuck at the root)
+        is covered by a second reload window. The whole check stays bounded
+        (three 30-second windows plus up to two reloads).
         """
         logger.debug("Verifying authentication success")
         deadline = 30000
         interval = 2000
-        for _ in range(deadline // interval):
-            if self._is_products_page(page.url):
-                logger.debug("CMP portal authentication verified")
-                return
-            # SPA hash navigation may update window.location before page.url.
-            href = await self._window_href(page)
-            if href is not None and self._is_products_page(href):
-                logger.debug("CMP portal authentication verified (window.location.href)")
-                return
-            await page.wait_for_timeout(interval)
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            for _ in range(deadline // interval):
+                # Every iteration guards the URL read: a closed/crashed page
+                # must never surface a raw Playwright error from the poll
+                # loop - '<unavailable>' simply fails the strict URL check and
+                # the bounded recovery (reload) continues normally.
+                if self._is_products_page(self._read_page_url(page)):
+                    logger.debug("CMP portal authentication verified")
+                    return
+                # SPA hash navigation may update window.location before page.url.
+                href = await self._window_href(page)
+                if href is not None and self._is_products_page(href):
+                    logger.debug("CMP portal authentication verified (window.location.href)")
+                    return
+                try:
+                    await page.wait_for_timeout(interval)
+                except PlaywrightError as e:
+                    # A dying/closed page must not surface a raw Playwright
+                    # error from the poll loop. Log only the safe category and
+                    # move this window onto the bounded reload path; the final
+                    # failure is always a normalized AuthenticationError.
+                    logger.warning(
+                        "Portal poll wait failed (%s); moving to reload path",
+                        type(e).__name__,
+                    )
+                    break
+            if attempt < max_attempts:
+                logger.warning(
+                    "Products URL not reached after %d ms; reloading portal and retrying",
+                    deadline,
+                )
+                # Normalize reload failures: a failed reload must not crash the
+                # whole workflow with a raw Playwright error - the next bounded
+                # poll window may still observe the SPA completing its boot.
+                # Only the safe error category is logged - never the raw
+                # exception message, which can embed page content.
+                try:
+                    await page.reload()
+                except PlaywrightError as e:
+                    logger.warning(
+                        "Portal reload failed (attempt %d/%d) - %s; continuing to poll",
+                        attempt,
+                        max_attempts,
+                        type(e).__name__,
+                    )
 
         # Get diagnostic info and raise with it - do not lose the failure context.
-        current_url = page.url
+        current_url = self._read_page_url(page)
         dom_summary = await self._get_dom_summary(page)
         raise AuthenticationError(
             "Authentication verification failed - Products page was not reached",
@@ -305,11 +480,27 @@ class CMPLogin:
         )
 
     async def _get_dom_summary(self, page: Page) -> str:
-        """Get a brief DOM summary for diagnostics without exposing secrets."""
+        """Collect a bounded, structural-only DOM diagnostic.
+
+        The in-page script reports only tag names, ids, classes, roles, and
+        element counts. Element text content is never read, so credentials,
+        OTPs, or arbitrary page body text cannot leak into the raised error.
+        """
         try:
-            body_text = await page.locator("body").inner_text()
-            # Truncate and sanitize
-            lines = body_text.split("\n")[:20]
-            return " | ".join(line.strip()[:100] for line in lines if line.strip())
+            info = await page.evaluate(self._AUTH_DIAGNOSTIC_JS)
         except Exception:
             return "Unable to retrieve DOM summary"
+        if not isinstance(info, dict):
+            return "Unable to retrieve DOM summary"
+        parts = []
+        for key, value in info.items():
+            if isinstance(value, list):
+                parts.append(
+                    f"{key}[{len(value)}]: " + " | ".join(str(v) for v in value[:10])
+                )
+            else:
+                parts.append(f"{key}={value}")
+        if not parts:
+            return "Unable to retrieve DOM summary"
+        summary = " | ".join(parts)
+        return summary[:2000]

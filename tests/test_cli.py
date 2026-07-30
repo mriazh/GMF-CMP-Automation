@@ -1,10 +1,39 @@
 """Tests for the CLI entry point."""
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from cmp_automation.cli import cli_main
+from cmp_automation.cli import cli_main, parse_args
+
+
+class TestParseArgs:
+    """Tests for CLI argument parsing (parse_args reads sys.argv)."""
+
+    def test_diagnose_auth_defaults_off(self):
+        """The auth diagnostic flag is opt-in and off by default."""
+        with patch.object(sys, "argv", ["cmp_automation"]):
+            args = parse_args()
+        assert args.diagnose_auth is False
+
+    def test_diagnose_auth_flag_enables(self):
+        """The auth diagnostic flag turns the opt-in diagnostic on."""
+        with patch.object(sys, "argv", ["cmp_automation", "--diagnose-auth"]):
+            args = parse_args()
+        assert args.diagnose_auth is True
+
+    def test_diagnose_flags_are_independent(self):
+        """The export and auth diagnostic flags do not affect each other."""
+        with patch.object(sys, "argv", ["cmp_automation", "--diagnose-auth"]):
+            args = parse_args()
+        assert args.diagnose_auth is True
+        assert args.diagnose_export is False
+
+        with patch.object(sys, "argv", ["cmp_automation", "--diagnose-export"]):
+            args = parse_args()
+        assert args.diagnose_export is True
+        assert args.diagnose_auth is False
 
 
 class TestCliMain:
