@@ -43,3 +43,6 @@ Thumbs.db
 # Logs
 *.egg-info/
 src/*.egg-info/
+
+# Agent handoff state
+CONTEXT.md

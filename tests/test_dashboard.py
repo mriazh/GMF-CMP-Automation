@@ -201,3 +201,57 @@ class TestDashboardWaitForLoad:
         assert page.locator.call_args_list[0].args[0] == (
             "div.v-csslayout.v-layout.v-widget.sparks.v-csslayout-sparks.v-has-width"
         )
+
+
+class TestDomSummary:
+    """Dashboard diagnostics are structural-only; body text/HTML never read."""
+
+    @pytest.mark.asyncio
+    async def test_diagnostic_js_never_reads_text_or_html(self, capture):
+        """The in-page script reports counts/summaries, never element text."""
+        js = capture._DASHBOARD_DIAGNOSTIC_JS
+        assert "textContent" not in js
+        assert "innerText" not in js
+        assert "innerHTML" not in js
+        assert "body.textContent" not in js
+        assert ".value" not in js
+
+    @pytest.mark.asyncio
+    async def test_summary_is_structural_counts_only(self, capture):
+        """Only tag/id/class/role summaries and counts are rendered."""
+        page = AsyncMock()
+        page.evaluate = AsyncMock(
+            return_value={
+                "sparks": 1,
+                "csslayouts": 3,
+                "grids": 0,
+                "windows": 1,
+                "dialogs": 0,
+                "bodyChildren": ["div.v-app", "div.v-view"],
+            }
+        )
+        summary = await capture._get_dom_summary(page)
+
+        assert "sparks=1" in summary
+        assert "csslayouts=3" in summary
+        assert "bodyChildren[2]" in summary
+        # Only structural entries - element text (SIM numbers, customer names)
+        # never appears in the summary.
+        assert "SIM" not in summary
+        assert "customer" not in summary
+        # Body text/HTML is never read via locators either.
+        page.locator.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_text_shaped_result_rejected(self, capture):
+        """A body-text-shaped evaluate result is rejected, never rendered."""
+        page = AsyncMock()
+        page.evaluate = AsyncMock(return_value="leaked SIM 08123456789")
+        assert await capture._get_dom_summary(page) == "Unable to retrieve DOM summary"
+
+    @pytest.mark.asyncio
+    async def test_evaluate_failure_returns_safe_placeholder(self, capture):
+        """A failing evaluate degrades to the safe placeholder, never a raw error."""
+        page = AsyncMock()
+        page.evaluate = AsyncMock(side_effect=RuntimeError("page crashed"))
+        assert await capture._get_dom_summary(page) == "Unable to retrieve DOM summary"

@@ -36,6 +36,37 @@ class DashboardCapture:
         '.v-progressbar',
     ]
 
+    # Safe structural DOM diagnostic for the dashboard failure path: reports
+    # only element counts and tag/id/class/role summaries - never element
+    # text, so dashboard cell content, customer names, or SIM numbers cannot
+    # leak into the raised error.
+    _DASHBOARD_DIAGNOSTIC_JS = """() => {
+  const count = (sel) => document.querySelectorAll(sel).length;
+  const summarize = (sel, max) => {
+    const out = [];
+    for (const el of Array.from(document.querySelectorAll(sel)).slice(0, max)) {
+      const cls = typeof el.className === 'string'
+        ? el.className.trim().split(' ').filter(Boolean).join('.')
+        : '';
+      out.push(
+        el.tagName.toLowerCase() +
+        (el.id ? '#' + el.id : '') +
+        (cls ? '.' + cls : '') +
+        (el.getAttribute('role') ? '[role=' + el.getAttribute('role') + ']' : '')
+      );
+    }
+    return out;
+  };
+  return {
+    sparks: count('div.sparks, .v-csslayout-sparks'),
+    csslayouts: count('[class*="v-csslayout"]'),
+    grids: count('[role="grid"], .v-grid'),
+    windows: count('.v-window'),
+    dialogs: count('[role="dialog"]'),
+    bodyChildren: summarize('body > *', 10)
+  };
+}"""
+
     def __init__(self, config: Config):
         self.config = config
 
@@ -147,13 +178,28 @@ class DashboardCapture:
             raise DashboardError("Failed to capture element screenshot", str(e)) from e
 
     async def _get_dom_summary(self, page: Page) -> str:
-        """Get a brief DOM summary for diagnostics."""
+        """Collect a bounded, structural-only DOM diagnostic.
+
+        The in-page script reports only tag names, ids, classes, roles, and
+        element counts. Element text content is never read, so dashboard cell
+        content, customer names, or SIM numbers cannot leak into the raised
+        error.
+        """
         try:
-            # Look for relevant dashboard-related elements
-            body = page.locator("body")
-            html = await body.inner_html()
-            # Extract relevant parts
-            lines = html.split("\n")[:50]
-            return " | ".join(line.strip()[:200] for line in lines if line.strip())
+            info = await page.evaluate(self._DASHBOARD_DIAGNOSTIC_JS)
         except Exception:
             return "Unable to retrieve DOM summary"
+        if not isinstance(info, dict):
+            return "Unable to retrieve DOM summary"
+        parts = []
+        for key, value in info.items():
+            if isinstance(value, list):
+                parts.append(
+                    f"{key}[{len(value)}]: " + " | ".join(str(v) for v in value[:10])
+                )
+            else:
+                parts.append(f"{key}={value}")
+        if not parts:
+            return "Unable to retrieve DOM summary"
+        summary = " | ".join(parts)
+        return summary[:2000]

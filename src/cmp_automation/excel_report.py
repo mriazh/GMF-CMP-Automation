@@ -19,7 +19,7 @@ class ExcelReportGenerator:
     """Generates final Excel report with embedded dashboard screenshot."""
 
     # Configuration for image placement
-    IMAGE_TOP_ROWS = 7  # Number of rows for image area
+    IMAGE_TOP_ROWS = 6  # Number of empty rows reserved for the image area
     IMAGE_SPAN_COLS = 15  # Number of columns image should span
 
     def __init__(self, config: Config):
@@ -130,8 +130,8 @@ class ExcelReportGenerator:
                 raise ExcelReportError("Dashboard image is not anchored at A1")
             if not images[0].width or not images[0].height:
                 raise ExcelReportError("Dashboard image has invalid dimensions")
-            if ws.cell(row=8, column=1).value is None:
-                raise ExcelReportError("Exported data header is not at row 8")
+            if ws.cell(row=7, column=1).value is None:
+                raise ExcelReportError("Exported data header is not at row 7")
             logger.debug("Workbook verification successful")
         except Exception as e:
             raise ExcelReportError("Workbook verification failed", str(e)) from e

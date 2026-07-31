@@ -102,7 +102,7 @@ class TestExcelReportGenerator:
         assert result.exists()
 
     def test_generate_report_inserts_rows(self, generator, sample_xlsx, sample_screenshot):
-        """Test that 7 rows are inserted at top."""
+        """Test that exactly 6 rows are inserted at top."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "report.xlsx"
             generator.generate_report(sample_xlsx, sample_screenshot, output_path)
@@ -112,9 +112,10 @@ class TestExcelReportGenerator:
             wb = load_workbook(output_path)
             ws = wb.active
 
-            # Original data should start at row 8 (7 inserted rows + 1 header)
-            assert ws.cell(row=8, column=1).value == "ID"
-            assert ws.cell(row=9, column=1).value == 1
+            # Original header moves to row 7 (6 inserted rows + 1 header);
+            # the original first data row moves to row 8.
+            assert ws.cell(row=7, column=1).value == "ID"
+            assert ws.cell(row=8, column=1).value == 1
 
     def test_generate_report_image_at_a1(self, generator, sample_xlsx, sample_screenshot):
         """Test that image is inserted at A1."""
@@ -132,7 +133,7 @@ class TestExcelReportGenerator:
             assert img.anchor._from.col == 0  # Col A (0-indexed)
 
     def test_generate_report_rows_no_custom_height(self, generator, sample_xlsx, sample_screenshot):
-        """Test that rows 1-7 do not receive explicit custom heights."""
+        """Test that rows 1-6 do not receive explicit custom heights."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "report.xlsx"
             generator.generate_report(sample_xlsx, sample_screenshot, output_path)
@@ -141,13 +142,13 @@ class TestExcelReportGenerator:
             wb = load_workbook(output_path)
             ws = wb.active
 
-            for row_num in range(1, 8):
+            for row_num in range(1, 7):
                 assert ws.row_dimensions[row_num].height is None, (
                     f"Row {row_num} should not have an explicit custom height"
                 )
 
     def test_generate_report_image_sizing(self, generator, sample_xlsx, sample_screenshot):
-        """Test that image is sized to span ~15 cols x 7 rows."""
+        """Test that image is sized to span ~15 cols x 6 rows."""
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "report.xlsx"
             generator.generate_report(sample_xlsx, sample_screenshot, output_path)
@@ -160,6 +161,39 @@ class TestExcelReportGenerator:
             # Image should be scaled (original is 1x1, should be scaled up)
             assert img.width > 1
             assert img.height > 1
+
+    def test_generate_report_image_spans_a_to_o(
+        self, generator, sample_xlsx, sample_screenshot
+    ):
+        """Test that the image is embedded and sized to fit the A:O area."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "report.xlsx"
+            generator.generate_report(sample_xlsx, sample_screenshot, output_path)
+
+            from openpyxl import load_workbook
+            from openpyxl.utils import get_column_letter
+
+            wb = load_workbook(output_path)
+            ws = wb.active
+
+            assert len(ws._images) == 1
+            img = ws._images[0]
+            assert img.anchor._from.col == 0
+            assert img.anchor._from.row == 0
+
+            target_width = sum(
+                (ws.column_dimensions[get_column_letter(col)].width or 8.43) * 7
+                for col in range(1, 16)
+            )
+            target_height = sum(
+                (ws.row_dimensions[row].height or 15) * 96 / 72
+                for row in range(1, 7)
+            )
+            # The image is scaled to fit the A:O (15 cols x 6 rows) area.
+            assert img.width > 0
+            assert img.height > 0
+            assert img.width <= target_width
+            assert img.height <= target_height
 
     def test_generate_report_column_widths(self, generator, sample_xlsx, sample_screenshot):
         """Test that existing column widths are preserved."""
