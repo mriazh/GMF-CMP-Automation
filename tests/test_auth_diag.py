@@ -359,3 +359,117 @@ class TestAuthDiagBounded:
             )
         await diag.detach()
         assert len(diag.summary()) <= 4000
+
+
+class TestAuthDiagDetachCleanupHardening:
+    """AuthDiag.detach() cleanup never masks the original exception
+    and always resets internal state."""
+
+    @pytest.mark.asyncio
+    async def test_framenavigated_removal_failure_does_not_block_detach(self):
+        """If page.remove_listener() raises for framenavigated, the
+        network diagnostic is still detached and _page is reset."""
+        page = FakePage()
+        diag = AuthDiag(APPROVED_HOST)
+        await diag.attach(page)
+        original_remove = page.remove_listener
+
+        def _failing_remove(event, handler):
+            if event == "framenavigated":
+                raise RuntimeError("page closing")
+            original_remove(event, handler)
+
+        page.remove_listener = _failing_remove
+        await diag.detach()
+        assert diag._page is None
+        assert diag._network._page is None
+
+    @pytest.mark.asyncio
+    async def test_network_detach_failure_does_not_block_detach(self):
+        """If NetworkDiag.detach() raises, framenavigated is still
+        removed and _page is reset."""
+        page = FakePage()
+        diag = AuthDiag(APPROVED_HOST)
+        await diag.attach(page)
+        original_remove = page.remove_listener
+
+        def _failing_remove(event, handler):
+            if event in ("request", "response", "requestfinished", "requestfailed"):
+                raise RuntimeError("browser dead")
+            original_remove(event, handler)
+
+        page.remove_listener = _failing_remove
+        await diag.detach()
+        assert diag._page is None
+
+    @pytest.mark.asyncio
+    async def test_both_cleanup_operations_raise(self):
+        """If both framenavigated removal and NetworkDiag.detach() raise,
+        _page is still reset and the exception is not propagated."""
+        page = FakePage()
+        diag = AuthDiag(APPROVED_HOST)
+        await diag.attach(page)
+        page.remove_listener = Mock(side_effect=RuntimeError("dead"))
+        await diag.detach()
+        assert diag._page is None
+
+    @pytest.mark.asyncio
+    async def test_page_reset_in_every_case(self):
+        """_page is reset regardless of which cleanup step fails."""
+        page = FakePage()
+        diag = AuthDiag(APPROVED_HOST)
+        await diag.attach(page)
+        page.remove_listener = Mock(side_effect=RuntimeError("fail"))
+        await diag.detach()
+        assert diag._page is None
+        # Second call is a no-op.
+        await diag.detach()
+        assert diag._page is None
+
+    @pytest.mark.asyncio
+    async def test_network_cleanup_attempted_even_when_framenavigated_fails(self):
+        """NetworkDiag.detach() is called even if framenavigated removal
+        raises — the two operations are independent."""
+        page = FakePage()
+        diag = AuthDiag(APPROVED_HOST)
+        await diag.attach(page)
+        network_detach_called = False
+        original_remove = page.remove_listener
+
+        def _spy_remove(event, handler):
+            nonlocal network_detach_called
+            if event == "framenavigated":
+                raise RuntimeError("page closing")
+            original_remove(event, handler)
+
+        page.remove_listener = _spy_remove
+        original_net_detach = diag._network.detach
+
+        def _tracking_net_detach():
+            nonlocal network_detach_called
+            network_detach_called = True
+            original_net_detach()
+
+        diag._network.detach = _tracking_net_detach
+        await diag.detach()
+        assert network_detach_called
+        assert diag._page is None
+
+    @pytest.mark.asyncio
+    async def test_original_exception_visible_when_detach_runs_from_finally(self):
+        """When detach() runs from a finally block after an auth failure,
+        the original exception is preserved — detach does not mask it."""
+        page = FakePage()
+        diag = AuthDiag(APPROVED_HOST)
+        await diag.attach(page)
+        page.remove_listener = Mock(side_effect=RuntimeError("browser dead"))
+
+        async def _run_with_cleanup():
+            try:
+                raise ValueError("authentication failed")
+            finally:
+                await diag.detach()
+
+        with pytest.raises(ValueError, match="authentication failed"):
+            await _run_with_cleanup()
+        assert diag._page is None

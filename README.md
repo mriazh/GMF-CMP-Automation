@@ -34,7 +34,7 @@ source .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install -e ".[dev]"
 
 # Install Playwright Firefox
-playwright install firefox
+python -m playwright install firefox
 ```
 
 ## Configuration
@@ -79,13 +79,23 @@ python -m cmp_automation --timeout 180
 
 # Override directories
 python -m cmp_automation --download-dir /path/to/downloads --profile-dir /path/to/firefox/profile
+
+# Opt-in sanitized diagnostics for live investigation
+python -m cmp_automation --headed --log-level DEBUG --diagnose-auth --diagnose-export
 ```
+
+The diagnostic flags are off by default. They record bounded metadata only:
+URL state categories, navigation events, structural DOM counts, and sanitized
+network metadata. They never record credentials, OTP values, request/response
+bodies, headers, cookies, POST data, query strings, page text, or HTML. The
+diagnostics do not add retries, reloads, or duplicate clicks.
 
 ## Output
 
 The workflow produces:
 1. `sim_export_YYYYMMDD_HHMMSS.xlsx` - Products export
-2. `sim_export_YYYYMMDD_HHMMSS - Edited.xlsx` - Final report with embedded dashboard screenshot
+2. `dashboard_sim_export_YYYYMMDD_HHMMSS.png` - Dashboard screenshot
+3. `sim_export_YYYYMMDD_HHMMSS - Edited.xlsx` - Final report with embedded dashboard screenshot
 
 ## Testing
 
@@ -115,24 +125,35 @@ python -m mypy src/cmp_automation/
 ```
 src/cmp_automation/
 ├── __init__.py          # Package exports
+├── __main__.py          # python -m entry point
 ├── cli.py               # CLI entry point
 ├── config.py            # Configuration management
 ├── exceptions.py        # Custom exceptions
 ├── browser.py           # Firefox browser management
 ├── cmp_login.py         # CMP login & OTP flow
-├── mailbox.py           # GMF Webmail OTP retrieval
+├── mailbox.py           # GMF IMAP OTP retrieval
+├── auth_diag.py         # Opt-in post-OTP auth diagnostic
+├── network_diag.py      # Opt-in sanitized network diagnostic
 ├── products.py          # Products export
 ├── dashboard.py         # Dashboard screenshot
 ├── excel_report.py      # Excel report generation
 └── workflow.py          # Main workflow orchestration
 
 tests/
+├── conftest.py
+├── test_auth_diag.py
+├── test_cli.py
+├── test_cmp_login.py
 ├── test_config.py
-├── test_exceptions.py
-├── test_otp_timestamp.py
-├── test_token_extraction.py
+├── test_dashboard.py
 ├── test_excel_report.py
+├── test_exceptions.py
+├── test_live_login.py
 ├── test_mailbox.py
+├── test_network_diag.py
+├── test_otp_timestamp.py
+├── test_products.py
+├── test_token_extraction.py
 ├── test_utils.py
 └── test_workflow.py
 ```

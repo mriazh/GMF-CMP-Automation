@@ -128,14 +128,27 @@ class AuthDiag:
         logger.debug("Auth diagnostic attached (post-OTP investigation)")
 
     async def detach(self) -> None:
-        """Stop listening and capture the final state. Safe when not attached."""
+        """Stop listening and capture the final state. Safe when not attached.
+
+        Each cleanup step is independently guarded so that a failure in
+        one (e.g. page closing mid-cleanup) does not prevent the others
+        from executing.  Cleanup exceptions are silently ignored — they
+        cannot fix a broken page and must not mask the original workflow
+        exception from ``CMPLogin.login()``'s finally block.
+        """
         page = self._page
         if page is None:
             return
         self._record_url_state(page)
         await self._sample_dom(page)
-        page.remove_listener("framenavigated", self._on_framenavigated)
-        self._network.detach()
+        try:
+            page.remove_listener("framenavigated", self._on_framenavigated)
+        except Exception:
+            pass
+        try:
+            self._network.detach()
+        except Exception:
+            pass
         self._page = None
         logger.debug("Auth diagnostic detached")
 
