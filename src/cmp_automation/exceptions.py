@@ -1,7 +1,6 @@
 """Custom exceptions for CMP Automation."""
 
 
-
 class CMPAutomationError(Exception):
     """Base exception for CMP Automation errors."""
 
@@ -44,8 +43,19 @@ class OTPExpiredError(OTPError):
     """Raised when OTP is expired or invalid."""
 
 
-class ProductsExportError(CMPAutomationError):
-    """Raised when products export fails."""
+class UsageQueryError(CMPAutomationError):
+    """Raised when Usage Query execution or parsing fails."""
+
+
+class ExportDialogCloseError(UsageQueryError):
+    """Raised when the export dialog fails to close."""
+
+
+class SortOrderError(UsageQueryError):
+    """Raised when table sort order verification fails."""
+
+
+ProductsExportError = UsageQueryError
 
 
 class DashboardError(CMPAutomationError):
@@ -62,3 +72,11 @@ class DownloadError(CMPAutomationError):
 
 class ValidationError(CMPAutomationError):
     """Raised when validation fails."""
+
+
+class WorkflowError(CMPAutomationError):
+    """Raised when workflow orchestration fails."""
+
+
+class WorkbookError(CMPAutomationError):
+    """Raised when monthly workbook operations fail."""

@@ -19,6 +19,12 @@ dashboard_*.png
 # Generated reports
 *_with_dashboard.xlsx
 *.xlsx
+output/
+/output/
+
+# Only sanitized example configuration is tracked
+config/*
+!config/*.example*
 
 # Python
 __pycache__/
@@ -49,3 +55,7 @@ src/*.egg-info/
 
 # Agent handoff state
 CONTEXT.md
+
+# Documentation
+docs/
+/docs/

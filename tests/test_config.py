@@ -44,8 +44,14 @@ class TestConfig:
     def test_missing_required_env_raises(self, monkeypatch, tmp_path):
         """Test that missing required env vars raise safe ConfigurationError."""
         # Clear all env vars and avoid picking up a real .env from the repo
-        for key in ["CMP_USERNAME", "CMP_PASSWORD", "GMF_EMAIL", "GMF_PASSWORD",
-                    "FIREFOX_PROFILE_DIR", "DOWNLOAD_DIR"]:
+        for key in [
+            "CMP_USERNAME",
+            "CMP_PASSWORD",
+            "GMF_EMAIL",
+            "GMF_PASSWORD",
+            "FIREFOX_PROFILE_DIR",
+            "DOWNLOAD_DIR",
+        ]:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.chdir(tmp_path)
 
@@ -55,8 +61,14 @@ class TestConfig:
     def test_load_config_safe_error_message(self, monkeypatch, tmp_path):
         """Test that load_config error message does not expose values."""
         # Clear all env vars and avoid picking up a real .env from the repo
-        for key in ["CMP_USERNAME", "CMP_PASSWORD", "GMF_EMAIL", "GMF_PASSWORD",
-                    "FIREFOX_PROFILE_DIR", "DOWNLOAD_DIR"]:
+        for key in [
+            "CMP_USERNAME",
+            "CMP_PASSWORD",
+            "GMF_EMAIL",
+            "GMF_PASSWORD",
+            "FIREFOX_PROFILE_DIR",
+            "DOWNLOAD_DIR",
+        ]:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.chdir(tmp_path)
 
@@ -68,7 +80,9 @@ class TestConfig:
             # Should list variable names but never any values
             assert "CMP_USERNAME" in message or "cmp_username" in message
             assert "test" not in message
-            assert "password" not in message.lower().replace("cmp_password", "").replace("gmf_password", "")
+            assert "password" not in message.lower().replace("cmp_password", "").replace(
+                "gmf_password", ""
+            ).replace("corp_password", "")
             assert "secret" not in message.lower()
 
     def test_invalid_timezone_raises(self, monkeypatch):
@@ -123,13 +137,17 @@ class TestConfig:
 
             monkeypatch.setenv("CMP_USERNAME", "testuser")
             monkeypatch.setenv("CMP_PASSWORD", "testpass")
-            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
-            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("CORP_EMAIL", "test@example.com")
+            monkeypatch.setenv("CORP_PASSWORD", "mailpass")
+            monkeypatch.delenv("GMF_IMAP_HOST", raising=False)
+            monkeypatch.delenv("GMF_IMAP_PORT", raising=False)
+            monkeypatch.setenv("CORP_IMAP_HOST", "mail.company.local")
+            monkeypatch.setenv("CORP_IMAP_PORT", "993")
             monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
             monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
 
             config = Config()
-            assert config.gmf_imap_host == "mail.gmf-aeroasia.co.id"
+            assert config.gmf_imap_host == "mail.company.local"
             assert config.gmf_imap_port == 993
 
     def test_imap_overrides(self, monkeypatch):
@@ -262,6 +280,28 @@ class TestValidatePaths:
         with tempfile.TemporaryDirectory() as tmpdir:
             profile_dir = Path(tmpdir) / "firefox_profile"
             download_dir = Path(tmpdir) / "downloads"
+            template_file = Path(tmpdir) / "template.xlsx"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+            template_file.touch()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("EXCEL_TEMPLATE_PATH", str(template_file))
+            monkeypatch.setenv("EXCEL_OUTPUT_DIR", str(tmpdir))
+
+            config = Config()
+            validate_paths(config)  # Should not raise
+
+    def test_missing_template_raises(self, monkeypatch):
+        """Test that missing template file raises error when no example exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
             profile_dir.mkdir()
             download_dir.mkdir()
 
@@ -271,9 +311,34 @@ class TestValidatePaths:
             monkeypatch.setenv("GMF_PASSWORD", "mailpass")
             monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
             monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("EXCEL_TEMPLATE_PATH", str(Path(tmpdir) / "missing_template.xlsx"))
 
             config = Config()
-            validate_paths(config)  # Should not raise
+            with pytest.raises(ConfigurationError, match="template.*does not exist"):
+                validate_paths(config)
+
+    def test_template_falls_back_to_example_file(self, monkeypatch):
+        """Test that validate_paths automatically falls back to .example.xlsx when main template is absent."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            example_file = Path(tmpdir) / "template.example.xlsx"
+            example_file.touch()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("EXCEL_TEMPLATE_PATH", str(Path(tmpdir) / "template.xlsx"))
+
+            config = Config()
+            validate_paths(config)
+            assert config.excel_template_path == example_file
 
     def test_missing_profile_dir_raises(self, monkeypatch):
         """Test that missing profile directory raises error."""

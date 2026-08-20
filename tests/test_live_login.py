@@ -40,6 +40,8 @@ async def test_live_login_to_products() -> None:
     headed = os.environ.get("CMP_LIVE_HEADED") == "1"
 
     config = load_config()
+    # This live test is valid on the office network as well as through the
+    # optional Check Point tunnel; the direct IMAP path is tested by connect().
     mailbox = MailboxClient(config)
     try:
         await mailbox.connect()

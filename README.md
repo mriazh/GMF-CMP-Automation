@@ -1,172 +1,91 @@
-# CMP Automation
+# Telkomsel CMP Automation
 
-Production-ready automation tool for the Telkomsel CMP Portal.
+Production-ready Firefox automation for Telkomsel CMP Portal Daily Usage Query reporting.
 
 ## Features
 
-- **Firefox-only** automation (Chromium blocked by firewall)
-- **Persistent Firefox profile** for session reuse
-- **OTP retrieval** via direct IMAP (imaplib) with timestamp validation — no webmail UI scraping
-- **Products export** to XLSX with sorting
-- **Dashboard screenshot** capture and embedding
-- **Excel report generation** with embedded dashboard image
-- **Secure configuration** via environment variables
-- **Comprehensive logging** without secrets
-- Unit and mocked integration tests; live smoke tests require VPN/mailbox access
-
-## Requirements
-
-- Python 3.11+
-- Firefox browser installed
-- Playwright Firefox binary, installed exactly with `python -m playwright install firefox`
-
-## Installation
-
-```bash
-# Clone and navigate to project
-cd GMF-CMP-Automation
-
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
-
-# Install dependencies
-pip install -e ".[dev]"
-
-# Install Playwright Firefox
-python -m playwright install firefox
-```
+- Firefox persistent-profile CAS login with direct IMAPS OTP retrieval.
+- Strict Daily Usage Query SPA flow only: Reports → Usage Query → Daily → date range → Search → descending Total Data Usage → Export to xlsx → Download → Close.
+- Portal raw XLSX filename is preserved unchanged, including its timestamp.
+- Configured monthly workbook template populated by day tab (`01`–`31`).
+- Same-day reruns replace only that day; other populated days remain intact.
+- Dashboard sparks capture navigated through the visible Dashboard menu and anchored at `H15`.
+- Optional, bounded Check Point/WARP readiness boundary; no implicit network mutation.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in your values:
+Copy `.env.example` to `.env` and set credentials, mailbox, and Firefox paths. The workbook paths default to the project layout:
 
-```bash
-cp .env.example .env
-# Edit .env with your credentials and paths
+```dotenv
+EXCEL_TEMPLATE_PATH=config/Daily-Data-Usage-M2M.xlsx
+EXCEL_OUTPUT_DIR=output
 ```
 
-Required environment variables:
+The repository tracks a sanitized example template at `config/Daily-Data-Usage-M2M.example.xlsx`. Local working files in `config/` (such as `Daily-Data-Usage-M2M.xlsx`) are gitignored to prevent accidental exposure of production ICCIDs or locations. Set these optional `.env` values to keep artifacts out of Downloads (recommended):
 
-| Variable | Description |
-|----------|-------------|
-| `CMP_USERNAME` | CMP Portal username |
-| `CMP_PASSWORD` | CMP Portal password |
-| `GMF_EMAIL` | GMF mailbox email (IMAP login) |
-| `GMF_PASSWORD` | GMF mailbox password |
-| `GMF_IMAP_HOST` | GMF IMAP server host (default: `mail.gmf-aeroasia.co.id`) |
-| `GMF_IMAP_PORT` | GMF IMAP server port (default: `993`) |
-| `FIREFOX_PROFILE_DIR` | Path to persistent Firefox profile |
-| `DOWNLOAD_DIR` | Directory for downloads |
-| `OTP_TIMEOUT_SECONDS` | OTP polling timeout (default: 120) |
-| `OTP_POLL_INTERVAL_SECONDS` | OTP polling interval (default: 5) |
-| `TIMEZONE` | IANA timezone (default: Asia/Jakarta) |
+```dotenv
+RAW_XLSX_DIR=output/raw
+IMAGE_DIR=output/images
+LOGS_DIR=output/logs
+```
+
+The project template is `config/Daily-Data-Usage-M2M.xlsx`; generated artifacts use the simple output layout:
+
+```text
+output/
+├─ raw/      # preserved portal XLSX files
+├─ images/   # timestamped dashboard captures (dashboard_YYYYMMDD_HHMMSS.png)
+├─ logs/     # structured run logs (app.log)
+└─ Daily-Data-Usage-M2M-YYYYMM.xlsx
+```
 
 ## Usage
 
 ```bash
-# Normal run (headless)
-python -m cmp_automation
+# 1. Full pipeline (default: Scrape + Generate)
+python -m cmp_automation --headed --date 2026-09-14
 
-# Headed mode (visible browser)
-python -m cmp_automation --headed
+# 2. Scrape only (Export raw XLSX + timestamped dashboard screenshot only)
+python -m cmp_automation --mode scrape --headed --date 2026-09-14
 
-# Dry run (validate config and browser only)
+# 3. Generate only (Populate monthly Excel from raw XLSX and image without browser)
+python -m cmp_automation --mode generate --date 2026-09-14
+python -m cmp_automation --mode generate --date 2026-09-14 --raw-xlsx output/raw/report_xxx.xlsx --image output/images/dashboard_xxx.png
+
+# 4. Interactive Terminal Menu (Scrape, Generate, Full)
+python -m cmp_automation --menu
+
+# Finite date range (each date updates its own day tab)
+python -m cmp_automation --start-date 2026-09-07 --end-date 2026-09-08 --headed
+
+# Validate configuration and browser launch only
 python -m cmp_automation --dry-run
 
-# Override timeout
-python -m cmp_automation --timeout 180
+## Artifact contract
 
-# Override directories
-python -m cmp_automation --download-dir /path/to/downloads --profile-dir /path/to/firefox/profile
+Raw portal report example:
 
-# Opt-in sanitized diagnostics for live investigation
-python -m cmp_automation --headed --log-level DEBUG --diagnose-auth --diagnose-export
+```text
+report_20260907_125433_DAILY_USAGE_by_SIM.xlsx
 ```
 
-The diagnostic flags are off by default. They record bounded metadata only:
-URL state categories, navigation events, structural DOM counts, and sanitized
-network metadata. They never record credentials, OTP values, request/response
-bodies, headers, cookies, POST data, query strings, page text, or HTML. The
-diagnostics do not add retries, reloads, or duplicate clicks.
+Monthly workbook example:
 
-## Output
+```text
+output/Daily-Data-Usage-M2M-202609.xlsx
+```
 
-The workflow produces:
-1. `sim_export_YYYYMMDD_HHMMSS.xlsx` - Products export
-2. `dashboard_sim_export_YYYYMMDD_HHMMSS.png` - Dashboard screenshot
-3. `sim_export_YYYYMMDD_HHMMSS - Edited.xlsx` - Final report with embedded dashboard screenshot
+Dashboard images are saved under the configured image/download directory and embedded in the target day sheet at `H15`.
 
-## Testing
+## Verification
 
 ```bash
-# Run all tests
-python -m pytest
-
-# Run with coverage report
-python -m pytest --cov=cmp_automation --cov-report=term-missing
-
-# Run a specific test file
-python -m pytest tests/test_mailbox.py -v
+python -m pytest -q
+python -m pytest --cov=cmp_automation --cov-report=term-missing -q
+ruff check .
+mypy src
+python -m compileall -q src
+git diff --check
 ```
 
-## Linting and Type Checking
-
-```bash
-# Lint
-python -m ruff check src/ tests/
-
-# Type check (strict)
-python -m mypy src/cmp_automation/
-```
-
-## Project Structure
-
-```
-src/cmp_automation/
-├── __init__.py          # Package exports
-├── __main__.py          # python -m entry point
-├── cli.py               # CLI entry point
-├── config.py            # Configuration management
-├── exceptions.py        # Custom exceptions
-├── browser.py           # Firefox browser management
-├── cmp_login.py         # CMP login & OTP flow
-├── mailbox.py           # GMF IMAP OTP retrieval
-├── auth_diag.py         # Opt-in post-OTP auth diagnostic
-├── network_diag.py      # Opt-in sanitized network diagnostic
-├── products.py          # Products export
-├── dashboard.py         # Dashboard screenshot
-├── excel_report.py      # Excel report generation
-└── workflow.py          # Main workflow orchestration
-
-tests/
-├── conftest.py
-├── test_auth_diag.py
-├── test_cli.py
-├── test_cmp_login.py
-├── test_config.py
-├── test_dashboard.py
-├── test_excel_report.py
-├── test_exceptions.py
-├── test_live_login.py
-├── test_mailbox.py
-├── test_network_diag.py
-├── test_otp_timestamp.py
-├── test_products.py
-├── test_token_extraction.py
-├── test_utils.py
-└── test_workflow.py
-```
-
-## Security and live-run notes
-
-- Credentials are read only from environment variables and never stored in source code.
-- Tokens, passwords, cookies, email bodies, and session data are not logged.
-- `.env`, Firefox profiles, screenshots, reports, downloads, and logs are ignored by Git.
-- OTP timestamps are timezone-aware and compared against the recorded workflow start time.
-- Live runs require access to the GMF network/VPN and a mailbox account matching `GMF_EMAIL`.
-- Unit tests and mocked integration tests use sanitized data only; they do not perform live login.
-
-## License
-
-Internal use only - GMF AeroAsia
+Live authentication/portal tests are opt-in and require office-network or confirmed VPN/IMAP readiness.

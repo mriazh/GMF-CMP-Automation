@@ -49,27 +49,19 @@ class TestDashboardUrlValidation:
         assert not capture._is_dashboard_url("http://ep.iotcc.telkomsel.com/#!dashboard")
 
     def test_lookalike_host_rejected(self, capture):
-        assert not capture._is_dashboard_url(
-            "https://ep.iotcc.telkomsel.com.evil.com/#!dashboard"
-        )
+        assert not capture._is_dashboard_url("https://ep.iotcc.telkomsel.com.evil.com/#!dashboard")
 
     def test_subdomain_host_rejected(self, capture):
-        assert not capture._is_dashboard_url(
-            "https://sub.ep.iotcc.telkomsel.com/#!dashboard"
-        )
+        assert not capture._is_dashboard_url("https://sub.ep.iotcc.telkomsel.com/#!dashboard")
 
     def test_explicit_port_rejected(self, capture):
-        assert not capture._is_dashboard_url(
-            "https://ep.iotcc.telkomsel.com:8443/#!dashboard"
-        )
+        assert not capture._is_dashboard_url("https://ep.iotcc.telkomsel.com:8443/#!dashboard")
 
     def test_wrong_fragment_rejected(self, capture):
         assert not capture._is_dashboard_url(OTHER_URL)
 
     def test_non_root_path_rejected(self, capture):
-        assert not capture._is_dashboard_url(
-            "https://ep.iotcc.telkomsel.com/app/#!dashboard"
-        )
+        assert not capture._is_dashboard_url("https://ep.iotcc.telkomsel.com/app/#!dashboard")
 
 
 class TestDashboardNavigation:
@@ -166,10 +158,7 @@ class TestDashboardWaitForLoad:
                 break
         assert combined_call is not None
         combined = combined_call.args[0]
-        assert (
-            "div.v-csslayout.v-layout.v-widget.sparks.v-csslayout-sparks.v-has-width"
-            in combined
-        )
+        assert "div.v-csslayout.v-layout.v-widget.sparks.v-csslayout-sparks.v-has-width" in combined
         assert '[data-testid="dashboard"]' in combined
         # Exactly one 30-second visibility wait in total - not one per
         # selector - and the wait is filtered to visible elements.

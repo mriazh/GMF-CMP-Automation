@@ -1,7 +1,9 @@
 """CMP Portal login and authentication flow."""
 
 import logging
+from collections.abc import Awaitable
 from datetime import datetime
+from typing import Any, cast
 from urllib.parse import urlparse
 
 from playwright.async_api import Error as PlaywrightError
@@ -44,8 +46,11 @@ class CMPLogin:
     SUBMIT_SELECTORS = [
         "#fm1 input[name='submit'][type='submit']",
         "#fm1 input[type='submit']",
-        'button[type="submit"]',
-        'input[type="submit"]',
+        "#fm1 button[type='submit']",
+        "form#fm1 button",
+        "form#fm1 input[type='image']",
+        "button[type='submit']",
+        "input[type='submit']",
         'button:has-text("Login")',
         'button:has-text("Sign In")',
         'button:has-text("Log In")',
@@ -256,14 +261,44 @@ class CMPLogin:
     async def _submit_login(self, page: Page) -> None:
         """Submit the login form."""
         logger.debug("Submitting login form")
-        for selector in self.SUBMIT_SELECTORS:
+        selectors = self.SUBMIT_SELECTORS
+        for selector in selectors:
             try:
                 button = page.locator(selector).first
+                await button.wait_for(state="visible", timeout=30000)
                 if await button.count() > 0:
                     await button.click()
                     logger.debug("Clicked login button using selector: %s", selector)
                     return
-            except Exception:
+            except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+        # CAS can render the submit control after the username/password fields;
+        # give the form one final bounded DOM settle window before failing.
+        try:
+            await page.wait_for_timeout(2000)
+        except PlaywrightError:
+            pass
+        for selector in selectors:
+            try:
+                button = page.locator(selector).first
+                if await button.count() > 0:
+                    await button.click(force=True)
+                    logger.debug("Clicked delayed login button using selector: %s", selector)
+                    return
+            except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+
+        # Some fresh CAS renders omit the submit control briefly or expose it
+        # without a submit type. Pressing Enter on the password field submits
+        # the same form and is a bounded, selector-independent final fallback.
+        for selector in ("#password", 'input[name="password"]', "#fm1 input[type='password']"):
+            try:
+                field = page.locator(selector).first
+                if await field.count() > 0:
+                    await field.press("Enter")
+                    logger.debug("Submitted login form from password field")
+                    return
+            except (PlaywrightTimeoutError, PlaywrightError):
                 continue
         raise AuthenticationError("Could not find login submit button")
 
@@ -281,10 +316,10 @@ class CMPLogin:
                     continue
             raise AuthenticationError("Token page did not load - token input not found")
         except PlaywrightTimeoutError as e:
-            raise AuthenticationError("Timeout waiting for token page", str(e)) from e
+            raise AuthenticationError("Timeout waiting for token page") from e
 
     async def _retrieve_otp(self) -> OTPToken:
-        """Retrieve OTP directly from the GMF mailbox via IMAP."""
+        """Retrieve OTP directly from the corporate mailbox via IMAP."""
         logger.debug("Retrieving OTP via IMAP")
         if not self.workflow_start_time:
             raise OTPError("Workflow start time not set")
@@ -304,7 +339,7 @@ class CMPLogin:
         except OTPTimeoutError:
             raise
         except Exception as e:
-            raise OTPError("Failed to retrieve OTP", str(e)) from e
+            raise OTPError("Failed to retrieve OTP") from e
 
     async def _submit_token(self, page: Page, token: str) -> None:
         """Submit the OTP token on the CMP token page."""
@@ -431,9 +466,26 @@ class CMPLogin:
                 # must never surface a raw Playwright error from the poll
                 # loop - '<unavailable>' simply fails the strict URL check and
                 # the bounded recovery (reload) continues normally.
-                if self._is_products_page(self._read_page_url(page)):
+                current = self._read_page_url(page)
+                if self._is_products_page(current):
                     logger.debug("CMP portal authentication verified")
                     return
+                # After OTP, a transient root URL can precede SPA mount. The
+                # authenticated portal DOM is a valid readiness signal even
+                # while the hash is still settling.
+                try:
+                    menu_locator = page.locator("span.main-menu-item-caption")
+                    menu_count_result: Any = menu_locator.count()
+                    menu_count = (
+                        await cast(Awaitable[int], menu_count_result)
+                        if hasattr(menu_count_result, "__await__")
+                        else menu_count_result
+                    )
+                    if isinstance(menu_count, int) and menu_count >= 5:
+                        logger.debug("CMP portal authentication verified by menu mount")
+                        return
+                except (PlaywrightError, AttributeError, TypeError):
+                    pass
                 # SPA hash navigation may update window.location before page.url.
                 href = await self._window_href(page)
                 if href is not None and self._is_products_page(href):

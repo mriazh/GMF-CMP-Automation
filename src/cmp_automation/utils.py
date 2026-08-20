@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def extract_token_from_email_body(body: str, sender: str | None = None) -> str | None:
     r"""Extract the six-digit numeric CMP OTP from an email body.
 
-    Aligned with the proven extraction logic in ``GMF-CMP-Monitor/otp.py``:
+    Aligned with the proven extraction logic in the proven direct IMAP OTP implementation:
     CMP OTPs are exactly six numeric digits, so 8-digit and alphanumeric
     candidates are never accepted.
 
@@ -128,5 +128,20 @@ async def wait_for_portal_url(
 
 
 def generate_export_filename(timestamp: datetime, download_dir: Path) -> Path:
-    """Generate the timestamped products export filename."""
-    return download_dir / f"sim_export_{timestamp.strftime('%Y%m%d_%H%M%S')}.xlsx"
+    """Generate the PRD daily usage report filename for a timezone-aware date."""
+    return download_dir / f"report_{timestamp.strftime('%Y%m%d')}_DAILY_USAGE_by_SIM.xlsx"
+
+
+def generate_dashboard_filename(timestamp: datetime, image_dir: Path) -> Path:
+    """Generate the PRD dashboard capture filename for a timezone-aware date."""
+    return image_dir / f"dashboard_{timestamp.strftime('%Y%m%d')}.png"
+
+
+def collision_safe_path(path: Path) -> Path:
+    """Return a non-overwriting path, adding a deterministic numeric suffix."""
+    candidate = path
+    suffix = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.stem}_{suffix}{path.suffix}")
+        suffix += 1
+    return candidate

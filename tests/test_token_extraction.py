@@ -127,7 +127,7 @@ class TestTokenExtraction:
     def test_sender_parameter_is_accepted(self):
         """Test that the sender argument is accepted (API compatibility guard)."""
         token = extract_token_from_email_body(
-            "token: 654321", sender="noreply@gmf-aeroasia.co.id"
+            "token: 654321", sender="noreply@company.local"
         )
         assert token == "654321"
 

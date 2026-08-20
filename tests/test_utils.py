@@ -8,7 +8,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from cmp_automation.utils import (
+    collision_safe_path,
     extract_token_from_email_body,
+    generate_dashboard_filename,
     generate_export_filename,
     is_approved_portal_url,
     wait_for_portal_url,
@@ -19,22 +21,29 @@ from cmp_automation.utils import (
 class TestGenerateExportFilename:
     """Tests for export filename generation."""
 
-    def test_timestamped_filename_format(self):
-        """Test the sim_export_YYYYMMDD_HHMMSS.xlsx format."""
+    def test_prd_filename_format(self):
+        """Test the PRD report_YYYYMMDD_DAILY_USAGE_by_SIM.xlsx format."""
         dt = datetime(2024, 1, 15, 12, 34, 56, tzinfo=ZoneInfo("Asia/Jakarta"))
         path = generate_export_filename(dt, Path("/tmp/downloads"))
-        assert path.name == "sim_export_20240115_123456.xlsx"
+        assert path.name == "report_20240115_DAILY_USAGE_by_SIM.xlsx"
         assert path.parent == Path("/tmp/downloads")
+
+    def test_dashboard_filename_and_collision_policy(self, tmp_path):
+        dt = datetime(2024, 1, 15, tzinfo=ZoneInfo("Asia/Jakarta"))
+        path = generate_dashboard_filename(dt, tmp_path)
+        assert path.name == "dashboard_20240115.png"
+        path.touch()
+        assert collision_safe_path(path).name == "dashboard_20240115_1.png"
 
     def test_end_of_year_rollover(self):
         """Test filename around a year boundary."""
         dt = datetime(2024, 12, 31, 23, 59, 59, tzinfo=ZoneInfo("Asia/Jakarta"))
-        assert generate_export_filename(dt, Path(".")).name == "sim_export_20241231_235959.xlsx"
+        assert generate_export_filename(dt, Path(".")).name == "report_20241231_DAILY_USAGE_by_SIM.xlsx"
 
     def test_single_digit_components_padded(self):
         """Test that month/day/hour components are zero-padded."""
         dt = datetime(2024, 6, 1, 8, 5, 7, tzinfo=ZoneInfo("Asia/Jakarta"))
-        assert generate_export_filename(dt, Path(".")).name == "sim_export_20240601_080507.xlsx"
+        assert generate_export_filename(dt, Path(".")).name == "report_20240601_DAILY_USAGE_by_SIM.xlsx"
 
     def test_edited_suffix_derivation(self):
         """Test the documented ' - Edited' suffix for the final report."""
@@ -42,7 +51,7 @@ class TestGenerateExportFilename:
             datetime(2024, 6, 1, 8, 5, 7, tzinfo=ZoneInfo("Asia/Jakarta")), Path("/tmp")
         )
         final = export.with_name(export.stem + " - Edited.xlsx")
-        assert final.name == "sim_export_20240601_080507 - Edited.xlsx"
+        assert final.name == "report_20240601_DAILY_USAGE_by_SIM - Edited.xlsx"
 
 
 class TestExtractTokenFromEmailBody:

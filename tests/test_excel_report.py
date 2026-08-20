@@ -1,245 +1,237 @@
-"""Tests for Excel report generation."""
+"""Tests for Excel report generation and template management."""
 
-import tempfile
+from datetime import date
 from pathlib import Path
 
+import openpyxl
 import pytest
-from openpyxl import Workbook
+from PIL import Image as PILImage
 
 from cmp_automation.config import Config
 from cmp_automation.excel_report import ExcelReportGenerator
 from cmp_automation.exceptions import ExcelReportError
+from cmp_automation.usage_query import UsageReportArtifact
+
+
+@pytest.fixture
+def config(tmp_path: Path) -> Config:
+    """Create a test config."""
+    template_path = tmp_path / "template.xlsx"
+    wb = openpyxl.Workbook()
+    for i in range(1, 6):
+        wb.create_sheet(f"{i:02d}")
+    wb.create_sheet("Master")
+    if "Sheet" in wb.sheetnames:
+        del wb["Sheet"]
+
+    ws01 = wb["01"]
+    ws01.cell(row=5, column=15, value="8962000000000001")
+    ws01.cell(row=5, column=16, value="Jakarta")
+    ws01.cell(row=6, column=15, value="8962000000000002")
+    ws01.cell(row=6, column=16, value="Surabaya")
+
+    ws_master = wb["Master"]
+    ws_master.cell(row=5, column=15, value="8962000000000003")
+    ws_master.cell(row=5, column=16, value="Bandung")
+
+    wb.save(template_path)
+
+    return Config(
+        cmp_username="test",
+        cmp_password="test",
+        gmf_email="test@test.com",
+        gmf_password="test",
+        firefox_profile_dir=tmp_path / "profile",
+        download_dir=tmp_path / "downloads",
+        excel_output_dir=tmp_path / "reports",
+        excel_template_path=template_path,
+        timezone="Asia/Jakarta",
+    )
+
+
+@pytest.fixture
+def generator(config: Config) -> ExcelReportGenerator:
+    """Create an ExcelReportGenerator."""
+    return ExcelReportGenerator(config)
+
+
+@pytest.fixture
+def sample_screenshot(tmp_path: Path) -> Path:
+    """Create a sample PNG image."""
+    img_path = tmp_path / "screenshot.png"
+    img = PILImage.new("RGB", (800, 400), color="blue")
+    img.save(img_path)
+    return img_path
 
 
 class TestExcelReportGenerator:
     """Tests for Excel report generation."""
 
-    @pytest.fixture
-    def config(self):
-        """Create a test config."""
-        return Config(
-            cmp_username="test",
-            cmp_password="test",
-            gmf_email="test@test.com",
-            gmf_password="test",
-            firefox_profile_dir="/tmp/profile",
-            download_dir="/tmp/downloads",
-            timezone="Asia/Jakarta",
+    def test_prepare_template_copy_normalizes_lookup(
+        self, generator: ExcelReportGenerator, config: Config, tmp_path: Path
+    ) -> None:
+        """Test that prepare_template_copy aggregates lookups across sheets and normalizes them."""
+        out_path = tmp_path / "output_monthly.xlsx"
+        generator.prepare_template_copy(config.excel_template_path, out_path)
+
+        assert out_path.exists()
+        wb = openpyxl.load_workbook(out_path)
+
+        for name in ["01", "02", "03", "04", "05", "Master"]:
+            ws = wb[name]
+            assert ws.cell(row=3, column=15).value == "ICCID"
+            assert ws.cell(row=3, column=16).value == "LOCATION"
+            assert ws.cell(row=4, column=15).value == "8962000000000001"
+            assert ws.cell(row=4, column=16).value == "Jakarta"
+            assert ws.cell(row=5, column=15).value == "8962000000000002"
+            assert ws.cell(row=5, column=16).value == "Surabaya"
+            assert ws.cell(row=6, column=15).value == "8962000000000003"
+            assert ws.cell(row=6, column=16).value == "Bandung"
+
+    def test_update_daily_sheet_main_table_and_top5(
+        self,
+        generator: ExcelReportGenerator,
+        config: Config,
+        sample_screenshot: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Test writing daily records, Top 5 with locations, formulas, and screenshot."""
+        out_path = tmp_path / "Daily-Data-Usage-M2M-202603.xlsx"
+        generator.prepare_template_copy(config.excel_template_path, out_path)
+
+        records = [
+            {"date": "2026-03-01", "iccid": "8962000000000002", "total_usage_bytes": 5000000000},
+            {"date": "2026-03-01", "iccid": "8962000000000001", "total_usage_bytes": 10000000000},
+            {"date": "2026-03-01", "iccid": "8962000000000003", "total_usage_bytes": 2000000000},
+        ]
+
+        generator.update_daily_sheet(
+            output_path=out_path,
+            query_date=date(2026, 3, 1),
+            records=records,
+            screenshot_path=sample_screenshot,
         )
 
-    @pytest.fixture
-    def generator(self, config):
-        """Create an ExcelReportGenerator."""
-        return ExcelReportGenerator(config)
+        wb = openpyxl.load_workbook(out_path)
+        ws = wb["01"]
 
-    @pytest.fixture
-    def sample_xlsx(self):
-        """Create a sample XLSX file for testing."""
-        import os
-        import tempfile
-        # Create a temp file and close it immediately
-        fd, path = tempfile.mkstemp(suffix=".xlsx")
-        os.close(fd)
-        try:
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "Products"
+        # Main table (sorted descending): row 5 should have 10GB, row 6 5GB, row 7 2GB
+        assert ws.cell(row=5, column=2).value == 1
+        assert ws.cell(row=5, column=3).value == "2026-03-01"
+        assert ws.cell(row=5, column=4).value == "8962000000000001"
+        assert ws.cell(row=5, column=5).value == 10000000000
 
-            # Add some sample data
-            headers = ["ID", "Name", "Status", "Billing Status", "Created"]
-            for col, header in enumerate(headers, 1):
-                ws.cell(row=1, column=col, value=header)
+        assert ws.cell(row=6, column=2).value == 2
+        assert ws.cell(row=6, column=4).value == "8962000000000002"
+        assert ws.cell(row=6, column=5).value == 5000000000
 
-            for row in range(2, 11):
-                ws.cell(row=row, column=1, value=row - 1)
-                ws.cell(row=row, column=2, value=f"Product {row - 1}")
-                ws.cell(row=row, column=3, value="Active")
-                ws.cell(row=row, column=4, value="Paid")
-                ws.cell(row=row, column=5, value="2024-01-15")
+        # Total formula
+        assert ws.cell(row=55, column=4).value == "TOTAL"
+        assert ws.cell(row=55, column=5).value == "=SUM(E5:E54)"
 
-            wb.save(path)
-            yield Path(path)
-        finally:
-            try:
-                Path(path).unlink(missing_ok=True)
-            except Exception:
-                pass
+        # Top 5 table
+        assert ws.cell(row=5, column=7).value == 1
+        assert ws.cell(row=5, column=9).value == "8962000000000001"
+        assert ws.cell(row=5, column=10).value == "Jakarta"  # Looked up from table
+        assert ws.cell(row=5, column=11).value == 10000000000
+        assert ws.cell(row=5, column=12).value == "=K5/(1024^3)"
 
-    @pytest.fixture
-    def sample_screenshot(self):
-        """Create a sample screenshot (100x100 pixel PNG)."""
-        import os
-        import tempfile
+        assert ws.cell(row=6, column=10).value == "Surabaya"
+        assert ws.cell(row=7, column=10).value == "Bandung"
 
-        from PIL import Image
-        # Create a temp file and close it immediately
-        fd, path = tempfile.mkstemp(suffix=".png")
-        os.close(fd)
-        try:
-            img = Image.new('RGB', (100, 100), color='red')
-            img.save(path, 'PNG')
-            yield Path(path)
-        finally:
-            try:
-                Path(path).unlink(missing_ok=True)
-            except Exception:
-                pass
+        # Summary cards
+        assert ws.cell(row=13, column=9).value == "=E55"
+        assert ws.cell(row=13, column=10).value == "=I13/(1024^3)"
+        assert ws.cell(row=13, column=11).value == "=COUNTA(D5:D54)"
 
-    def test_generate_report_creates_output(self, generator, sample_xlsx, sample_screenshot):
-        """Test that report generation creates output file."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "report_with_dashboard.xlsx"
-            result = generator.generate_report(sample_xlsx, sample_screenshot, output_path)
+        # Screenshot check
+        assert hasattr(ws, "_images")
+        assert len(ws._images) == 1
+        image = ws._images[0]
+        assert image.anchor._from.col == 7
+        assert image.anchor._from.row == 14
+        max_width_emu = sum(
+            ws.column_dimensions[column].width or 8.43 for column in "HIJKL"
+        ) * 7 * 9525
+        assert image.anchor.ext.cx <= max_width_emu
 
-            assert result == output_path
-            assert result.exists()
+    def test_rerun_overwrites_cleanly(
+        self, generator: ExcelReportGenerator, config: Config, tmp_path: Path
+    ) -> None:
+        """Test that rerunning on the same day cleanly replaces prior data."""
+        out_path = tmp_path / "Daily-Data-Usage-M2M-202603.xlsx"
+        generator.prepare_template_copy(config.excel_template_path, out_path)
 
-    def test_generate_report_auto_naming(self, generator, sample_xlsx, sample_screenshot):
-        """Test automatic output naming with ' - Edited' suffix."""
-        result = generator.generate_report(sample_xlsx, sample_screenshot)
+        initial_records = [
+            {"date": "2026-03-01", "iccid": f"896200000000000{i}", "total_usage_bytes": i * 1000}
+            for i in range(1, 4)
+        ]
+        generator.update_daily_sheet(out_path, date(2026, 3, 1), initial_records)
 
-        assert result.name.endswith(" - Edited.xlsx")
-        assert result.exists()
+        new_records = [
+            {"date": "2026-03-01", "iccid": "8962000000000001", "total_usage_bytes": 99999}
+        ]
+        generator.update_daily_sheet(out_path, date(2026, 3, 1), new_records)
 
-    def test_generate_report_inserts_rows(self, generator, sample_xlsx, sample_screenshot):
-        """Test that exactly 6 rows are inserted at top."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "report.xlsx"
-            generator.generate_report(sample_xlsx, sample_screenshot, output_path)
+        wb = openpyxl.load_workbook(out_path)
+        ws = wb["01"]
 
-            # Reload and check
-            from openpyxl import load_workbook
-            wb = load_workbook(output_path)
-            ws = wb.active
+        assert ws.cell(row=5, column=4).value == "8962000000000001"
+        assert ws.cell(row=5, column=5).value == 99999
+        assert ws.cell(row=6, column=4).value is None
+        assert ws.cell(row=6, column=5).value is None
+        assert ws.cell(row=7, column=4).value is None
 
-            # Original header moves to row 7 (6 inserted rows + 1 header);
-            # the original first data row moves to row 8.
-            assert ws.cell(row=7, column=1).value == "ID"
-            assert ws.cell(row=8, column=1).value == 1
+    def test_generate_report_from_artifact(
+        self,
+        generator: ExcelReportGenerator,
+        config: Config,
+        sample_screenshot: Path,
+        tmp_path: Path,
+    ) -> None:
+        """Test high-level generate_report with UsageReportArtifact."""
+        artifact = UsageReportArtifact(
+            raw_path=tmp_path / "raw.xlsx",
+            query_date=date(2026, 3, 2),
+            rows=[{"date": "2026-03-02", "iccid": "8962000000000001", "total_usage_bytes": 12345}],
+        )
 
-    def test_generate_report_image_at_a1(self, generator, sample_xlsx, sample_screenshot):
-        """Test that image is inserted at A1."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "report.xlsx"
-            generator.generate_report(sample_xlsx, sample_screenshot, output_path)
+        report_path = generator.generate_report(
+            artifact_or_path=artifact,
+            screenshot_path=sample_screenshot,
+            query_date=date(2026, 3, 2),
+        )
 
-            from openpyxl import load_workbook
-            wb = load_workbook(output_path)
-            ws = wb.active
+        assert report_path.exists()
+        assert "Daily-Data-Usage-M2M-202603.xlsx" in report_path.name
 
-            assert len(ws._images) == 1
-            img = ws._images[0]
-            assert img.anchor._from.row == 0  # Row 1 (0-indexed)
-            assert img.anchor._from.col == 0  # Col A (0-indexed)
+        wb = openpyxl.load_workbook(report_path)
+        ws = wb["02"]
+        assert ws.cell(row=5, column=4).value == "8962000000000001"
+        assert ws.cell(row=5, column=5).value == 12345
 
-    def test_generate_report_rows_no_custom_height(self, generator, sample_xlsx, sample_screenshot):
-        """Test that rows 1-6 do not receive explicit custom heights."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "report.xlsx"
-            generator.generate_report(sample_xlsx, sample_screenshot, output_path)
-
-            from openpyxl import load_workbook
-            wb = load_workbook(output_path)
-            ws = wb.active
-
-            for row_num in range(1, 7):
-                assert ws.row_dimensions[row_num].height is None, (
-                    f"Row {row_num} should not have an explicit custom height"
-                )
-
-    def test_generate_report_image_sizing(self, generator, sample_xlsx, sample_screenshot):
-        """Test that image is sized to span ~15 cols x 6 rows."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "report.xlsx"
-            generator.generate_report(sample_xlsx, sample_screenshot, output_path)
-
-            from openpyxl import load_workbook
-            wb = load_workbook(output_path)
-            ws = wb.active
-
-            img = ws._images[0]
-            # Image should be scaled (original is 1x1, should be scaled up)
-            assert img.width > 1
-            assert img.height > 1
-
-    def test_generate_report_image_spans_a_to_o(
-        self, generator, sample_xlsx, sample_screenshot
-    ):
-        """Test that the image is embedded and sized to fit the A:O area."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "report.xlsx"
-            generator.generate_report(sample_xlsx, sample_screenshot, output_path)
-
-            from openpyxl import load_workbook
-            from openpyxl.utils import get_column_letter
-
-            wb = load_workbook(output_path)
-            ws = wb.active
-
-            assert len(ws._images) == 1
-            img = ws._images[0]
-            assert img.anchor._from.col == 0
-            assert img.anchor._from.row == 0
-
-            target_width = sum(
-                (ws.column_dimensions[get_column_letter(col)].width or 8.43) * 7
-                for col in range(1, 16)
-            )
-            target_height = sum(
-                (ws.row_dimensions[row].height or 15) * 96 / 72
-                for row in range(1, 7)
-            )
-            # The image is scaled to fit the A:O (15 cols x 6 rows) area.
-            assert img.width > 0
-            assert img.height > 0
-            assert img.width <= target_width
-            assert img.height <= target_height
-
-    def test_generate_report_column_widths(self, generator, sample_xlsx, sample_screenshot):
-        """Test that existing column widths are preserved."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "report.xlsx"
-            generator.generate_report(sample_xlsx, sample_screenshot, output_path)
-
-            from openpyxl import load_workbook
-            from openpyxl.utils import get_column_letter
-
-            wb = load_workbook(output_path)
-            ws = wb.active
-
-            for col_idx in range(1, 16):
-                col_letter = get_column_letter(col_idx)
-                assert ws.column_dimensions[col_letter].width == 13.0
-
-    def test_generate_report_verifies_workbook(self, generator, sample_xlsx, sample_screenshot):
-        """Test that generated workbook can be reopened."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "report.xlsx"
-            generator.generate_report(sample_xlsx, sample_screenshot, output_path)
-
-            # This should not raise
-            from openpyxl import load_workbook
-            wb = load_workbook(output_path)
-            assert wb.active is not None
-
-    def test_missing_source_raises(self, generator, sample_screenshot):
-        """Test that missing source XLSX raises error."""
+    def test_missing_template_raises(self, generator: ExcelReportGenerator, tmp_path: Path) -> None:
+        """Test missing source template raises ExcelReportError."""
         with pytest.raises(ExcelReportError, match="not found"):
-            generator.generate_report(Path("/nonexistent.xlsx"), sample_screenshot)
+            generator.prepare_template_copy(Path("/nonexistent/tpl.xlsx"), tmp_path / "out.xlsx")
 
-    def test_missing_screenshot_raises(self, generator, sample_xlsx):
-        """Test that missing screenshot raises error."""
-        with pytest.raises(ExcelReportError, match="not found"):
-            generator.generate_report(sample_xlsx, Path("/nonexistent.png"))
+    def test_missing_screenshot_raises(
+        self, generator: ExcelReportGenerator, config: Config, tmp_path: Path
+    ) -> None:
+        """Test missing screenshot file raises ExcelReportError."""
+        out_path = tmp_path / "out.xlsx"
+        generator.prepare_template_copy(config.excel_template_path, out_path)
+        with pytest.raises(ExcelReportError, match="Screenshot not found"):
+            generator.update_daily_sheet(
+                output_path=out_path,
+                query_date=date(2026, 3, 1),
+                records=[],
+                screenshot_path=Path("/nonexistent/pic.png"),
+            )
 
-    def test_empty_source_raises(self, generator, sample_screenshot):
-        """Test that empty/corrupt source raises error."""
-        with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as f:
-            f.write(b"not an xlsx file")
-            bad_path = Path(f.name)
-
-        try:
-            with pytest.raises(ExcelReportError):
-                generator.generate_report(bad_path, sample_screenshot)
-        finally:
-            bad_path.unlink(missing_ok=True)
+    def test_corrupt_template_raises(self, generator: ExcelReportGenerator, tmp_path: Path) -> None:
+        """Test corrupt template raises ExcelReportError."""
+        bad_tpl = tmp_path / "bad.xlsx"
+        bad_tpl.write_bytes(b"not a zip file")
+        with pytest.raises(ExcelReportError, match="not a valid XLSX"):
+            generator.prepare_template_copy(bad_tpl, tmp_path / "out.xlsx")

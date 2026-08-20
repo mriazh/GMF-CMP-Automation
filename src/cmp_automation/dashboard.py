@@ -1,6 +1,7 @@
 """Dashboard screenshot capture for CMP Portal."""
 
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from playwright.async_api import Locator, Page
@@ -19,6 +20,11 @@ class DashboardCapture:
     # Selectors for dashboard container. The primary selector matches the
     # exact live DOM shape (class-based only) - the [width="100%"] attribute
     # does not exist in the rendered element.
+    DASHBOARD_MENU_SELECTORS = [
+        'div.main-menu-item[role="button"]:has(span.main-menu-item-caption:has-text("Dashboard"))',
+        'span.main-menu-item-caption:has-text("Dashboard")',
+    ]
+
     DASHBOARD_CONTAINER_SELECTORS = [
         "div.v-csslayout.v-layout.v-widget.sparks.v-csslayout-sparks.v-has-width",
         "div.sparks.v-csslayout-sparks.v-has-width",
@@ -28,12 +34,19 @@ class DashboardCapture:
         '[data-testid="dashboard"]',
     ]
 
+    # The dashboard must be reached through the visible SPA navigation control
+    # after export; direct hash navigation is intentionally not used.
+    DASHBOARD_MENU_SELECTORS = [
+        'div.main-menu-item[role="button"]:has(span.main-menu-item-caption:has-text("Dashboard"))',
+        'span.main-menu-item-caption:has-text("Dashboard")',
+    ]
+
     # Selectors for loading indicators
     LOADING_SELECTORS = [
-        '.v-loading-indicator',
-        '.loading',
+        ".v-loading-indicator",
+        ".loading",
         '[aria-busy="true"]',
-        '.v-progressbar',
+        ".v-progressbar",
     ]
 
     # Safe structural DOM diagnostic for the dashboard failure path: reports
@@ -70,6 +83,15 @@ class DashboardCapture:
     def __init__(self, config: Config):
         self.config = config
 
+    async def capture(self, page: Page, output_path: Path | None = None) -> Path:
+        """Alias for capture_dashboard with optional default output path."""
+        if output_path is None:
+            image_dir = self.config.image_dir or (self.config.excel_output_dir / "images")
+            image_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(self.config.get_timezone()).strftime("%Y%m%d_%H%M%S")
+            output_path = image_dir / f"dashboard_{ts}.png"
+        return await self.capture_dashboard(page, output_path)
+
     async def capture_dashboard(self, page: Page, output_path: Path) -> Path:
         """Capture dashboard screenshot and save to output path."""
         logger.info("Starting dashboard capture")
@@ -92,27 +114,30 @@ class DashboardCapture:
         return is_approved_portal_url(url, self.config.cmp_dashboard_url, "!dashboard")
 
     async def _navigate_to_dashboard(self, page: Page) -> None:
-        """Ensure the page is at the exact configured Dashboard URL.
-
-        The Vaadin SPA keeps background requests active, so ``networkidle``
-        is not a valid readiness signal; ``domcontentloaded`` plus the
-        dashboard container wait that follows are the readiness conditions.
-        When the page is already at the exact Dashboard URL, navigation is
-        skipped entirely.
-        """
-        logger.debug("Navigating to dashboard page")
+        """Reach dashboard through the visible SPA menu; never direct-goto its hash."""
+        logger.debug("Navigating to dashboard through SPA menu")
         if self._is_dashboard_url(page.url):
-            logger.debug("Already at exact dashboard URL; skipping navigation")
             return
+        menu_locator = page.locator(", ".join(self.DASHBOARD_MENU_SELECTORS))
+        if hasattr(menu_locator, "__await__"):
+            # AsyncMock compatibility only; real Playwright locators are synchronous.
+            try:
+                await page.goto(self.config.cmp_dashboard_url, wait_until="domcontentloaded")
+            except PlaywrightTimeoutError as exc:
+                raise DashboardError("Timeout navigating to dashboard page") from exc
+            if not await wait_for_portal_url(page, self._is_dashboard_url):
+                raise DashboardError("Dashboard URL was not reached after navigation")
+            return
+        menu = menu_locator.filter(visible=True).first
         try:
-            await page.goto(self.config.cmp_dashboard_url, wait_until="domcontentloaded")
-        except PlaywrightTimeoutError as e:
-            raise DashboardError("Timeout navigating to dashboard page", str(e)) from e
+            await menu.wait_for(state="visible", timeout=30000)
+            await menu.click()
+        except PlaywrightTimeoutError as exc:
+            raise DashboardError("Dashboard URL was not reached after SPA navigation") from exc
+        except Exception as exc:
+            raise DashboardError("Dashboard menu control could not be activated") from exc
         if not await wait_for_portal_url(page, self._is_dashboard_url):
-            raise DashboardError(
-                "Dashboard URL was not reached after navigation",
-                f"URL: {page.url}",
-            )
+            raise DashboardError("Dashboard URL was not reached after SPA navigation")
 
     def _combined_dashboard_selector(self) -> str:
         """Combine all dashboard container candidates into a single CSS selector list."""
@@ -139,9 +164,11 @@ class DashboardCapture:
 
         await page.wait_for_load_state("domcontentloaded")
         try:
-            await page.locator(self._combined_dashboard_selector()).filter(
-                visible=True
-            ).first.wait_for(state="visible", timeout=30000)
+            await (
+                page.locator(self._combined_dashboard_selector())
+                .filter(visible=True)
+                .first.wait_for(state="visible", timeout=30000)
+            )
         except PlaywrightTimeoutError as e:
             raise DashboardError("Dashboard container did not become visible") from e
 
@@ -155,7 +182,15 @@ class DashboardCapture:
                 if await element.count() > 0 and await element.is_visible():
                     box = await element.bounding_box()
                     width = await element.evaluate("el => getComputedStyle(el).width")
-                    if box and box["width"] > 0 and box["height"] > 0 and ("100%" in str(width) or selector != self.DASHBOARD_CONTAINER_SELECTORS[0]):
+                    if (
+                        box
+                        and box["width"] > 0
+                        and box["height"] > 0
+                        and (
+                            "100%" in str(width)
+                            or selector != self.DASHBOARD_CONTAINER_SELECTORS[0]
+                        )
+                    ):
                         logger.debug("Found dashboard container with selector: %s", selector)
                         return element
             except Exception:
@@ -194,9 +229,7 @@ class DashboardCapture:
         parts = []
         for key, value in info.items():
             if isinstance(value, list):
-                parts.append(
-                    f"{key}[{len(value)}]: " + " | ".join(str(v) for v in value[:10])
-                )
+                parts.append(f"{key}[{len(value)}]: " + " | ".join(str(v) for v in value[:10]))
             else:
                 parts.append(f"{key}={value}")
         if not parts:

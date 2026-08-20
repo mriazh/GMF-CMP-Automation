@@ -1,11 +1,12 @@
 """Tests for the CMP login flow with IMAP-based OTP retrieval."""
 
 from datetime import datetime
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from cmp_automation.cmp_login import CMPLogin
 from cmp_automation.config import Config
@@ -269,6 +270,19 @@ class TestNavigateToLogin:
     def login(self, config):
         """Create a CMPLogin for navigation tests."""
         return CMPLogin(config, MailboxClient(config))
+
+    @pytest.mark.asyncio
+    async def test_submit_login_accepts_form_button_after_delayed_mount(self, login):
+        page = AsyncMock()
+        button = MagicMock()
+        button.first = button
+        button.count = AsyncMock(return_value=1)
+        button.wait_for = AsyncMock(side_effect=PlaywrightTimeoutError("not ready"))
+        button.click = AsyncMock()
+        page.locator = MagicMock(return_value=button)
+        page.wait_for_timeout = AsyncMock()
+        await login._submit_login(page)
+        button.click.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_navigate_to_login_uses_domcontentloaded(self, login):

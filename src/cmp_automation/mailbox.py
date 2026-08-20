@@ -1,8 +1,8 @@
-"""IMAP-based GMF mailbox client for OTP retrieval.
+"""IMAP-based corporate mailbox client for OTP retrieval.
 
 Replaces the previous Playwright webmail UI scraping approach with a direct
-IMAP client (proven pattern from ``GMF-CMP-Monitor``). Connects via IMAPS
-(``imaplib.IMAP4_SSL``) to the GMF mailbox, polls for OTP emails matching the
+IMAP client using a proven direct IMAPS pattern. Connects via IMAPS
+(``imaplib.IMAP4_SSL``) to the corporate mailbox, polls for OTP emails matching the
 exact subject, and accepts only messages received within the workflow's
 freshness window (start time minus the configured clock-skew tolerance).
 """
@@ -13,6 +13,7 @@ import email.utils
 import imaplib
 import logging
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from email.header import decode_header
@@ -47,7 +48,7 @@ class _OtpMessage:
 
 
 class MailboxClient:
-    """IMAP client for retrieving OTP emails from the GMF mailbox.
+    """IMAP client for retrieving OTP emails from the corporate mailbox.
 
     Uses IMAPS with mandatory TLS. The mailbox is opened read-only; no
     message is ever modified or marked as seen.
@@ -98,27 +99,40 @@ class MailboxClient:
             return
         host = self.config.gmf_imap_host
         port = self.config.gmf_imap_port
-        logger.info("Connecting to GMF IMAP %s:%s (IMAPS)", host, port)
+        logger.info("Connecting to corporate IMAP %s:%s (IMAPS)", host, port)
         conn: imaplib.IMAP4_SSL | None = None
-        try:
-            conn = imaplib.IMAP4_SSL(host, port, timeout=self.IMAP_TIMEOUT_SECONDS)
-            conn.login(self.config.gmf_email, self.config.gmf_password)
-            status, _ = conn.select("INBOX", readonly=True)
-            if status != "OK":
-                raise OTPError("Failed to select INBOX mailbox")
-            self._connection = conn
-            # Snapshot the highest UID at connect time (before authentication)
-            # so that stale OTP emails from a previous run are never accepted.
-            self._base_uid = 0
-            self._take_uid_snapshot()
-            logger.info("Connected to GMF IMAP mailbox (read-only)")
-        except OTPError:
-            self._close_connection(conn)
-            raise
-        except Exception as exc:
-            self._close_connection(conn)
-            logger.warning("IMAP connection failed: %s", type(exc).__name__)
-            raise OTPError("IMAP connection failed") from exc
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                conn = imaplib.IMAP4_SSL(host, port, timeout=self.IMAP_TIMEOUT_SECONDS)
+                conn.login(self.config.gmf_email, self.config.gmf_password)
+                status, _ = conn.select("INBOX", readonly=True)
+                if status != "OK":
+                    raise OTPError("Failed to select INBOX mailbox")
+                self._connection = conn
+                # Snapshot the highest UID at connect time (before authentication)
+                # so that stale OTP emails from a previous run are never accepted.
+                self._base_uid = 0
+                self._take_uid_snapshot()
+                logger.info("Connected to corporate IMAP mailbox (read-only)")
+                return
+            except OTPError:
+                self._close_connection(conn)
+                raise
+            except Exception as exc:
+                self._close_connection(conn)
+                conn = None
+                # Fast-fail for credential/authentication rejections, only retry connection drops/timeouts
+                if "auth" in str(exc).lower() or attempt >= max_attempts:
+                    logger.warning("IMAP connection failed: %s", type(exc).__name__)
+                    raise OTPError("IMAP connection failed") from exc
+                logger.warning(
+                    "IMAP connection attempt %d/%d failed (%s); retrying in 1s",
+                    attempt,
+                    max_attempts,
+                    type(exc).__name__,
+                )
+                time.sleep(1.0)
 
     @staticmethod
     def _close_connection(conn: imaplib.IMAP4_SSL | None) -> None:

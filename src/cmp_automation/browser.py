@@ -1,8 +1,11 @@
 """Browser management for CMP Automation."""
 
 import logging
+import subprocess
+import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
 
@@ -10,6 +13,27 @@ from .config import Config
 from .exceptions import BrowserError
 
 logger = logging.getLogger(__name__)
+
+
+def _clear_stale_firefox_lock(profile_dir: Path) -> None:
+    """Remove stale parent.lock from persistent profile if no Firefox process is running."""
+    lock_file = profile_dir / "parent.lock"
+    if not lock_file.exists():
+        return
+    try:
+        if sys.platform == "win32":
+            res = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq firefox.exe"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if "firefox.exe" in res.stdout.lower():
+                return
+        lock_file.unlink(missing_ok=True)
+        logger.info("Cleared stale Firefox parent.lock from %s", profile_dir)
+    except Exception as exc:
+        logger.warning("Could not clear potential stale Firefox lock: %s", exc)
 
 
 class BrowserManager:
@@ -26,6 +50,8 @@ class BrowserManager:
         logger.info("Starting Playwright and launching Firefox")
         self._playwright = await async_playwright().start()
 
+        _clear_stale_firefox_lock(self.config.firefox_profile_dir)
+
         try:
             self._browser = await self._playwright.firefox.launch_persistent_context(
                 user_data_dir=str(self.config.firefox_profile_dir),
@@ -40,13 +66,16 @@ class BrowserManager:
             return self._browser
         except Exception as e:
             await self.cleanup()
-            raise BrowserError("Failed to launch Firefox", str(e)) from e
+            raise BrowserError("Failed to launch Firefox") from e
 
     async def new_page(self) -> Page:
-        """Create a new page in the persistent context."""
+        """Create or reuse the initial page in the persistent context."""
         if not self._browser:
             raise BrowserError("Browser not started. Call start() first.")
-        page = await self._browser.new_page()
+        if self._browser.pages:
+            page = self._browser.pages[0]
+        else:
+            page = await self._browser.new_page()
         page.set_default_timeout(30000)
         return page
 
@@ -64,13 +93,13 @@ class BrowserManager:
             try:
                 await self._browser.close()
             except Exception as e:
-                logger.warning("Error closing browser context: %s", e)
+                logger.warning("Error closing browser context: %s", type(e).__name__)
             self._browser = None
         if self._playwright:
             try:
                 await self._playwright.stop()
             except Exception as e:
-                logger.warning("Error stopping Playwright: %s", e)
+                logger.warning("Error stopping Playwright: %s", type(e).__name__)
             self._playwright = None
 
     async def __aenter__(self) -> "BrowserManager":
