@@ -146,8 +146,13 @@ if ($Upload) {
     }
 
     Write-Host "Checking if GitHub release v$Version exists..." -ForegroundColor Cyan
-    $ReleaseCheck = & $GhCommand.Source release view "v$Version" 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $PrevEA = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $GhCommand.Source release view "v$Version" >$null 2>&1
+    $Exists = ($LASTEXITCODE -eq 0)
+    $ErrorActionPreference = $PrevEA
+
+    if (-not $Exists) {
         Write-Host "Creating GitHub release v$Version..." -ForegroundColor Cyan
         & $GhCommand.Source release create "v$Version" --title "v$Version - Standalone Portable Release" --notes "Telkomsel CMP Automation Standalone Portable Release v$Version"
     }
