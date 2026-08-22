@@ -53,6 +53,15 @@ logs/
 *.egg-info/
 src/*.egg-info/
 
+# Build and Packaging
+build/
+dist/
+staging/
+release/
+*.spec
+!telkomsel_cmp_automation.spec
+*.zip
+
 # Agent handoff state
 CONTEXT.md
 

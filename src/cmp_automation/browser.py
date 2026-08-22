@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from playwright.async_api import BrowserContext, Page, Playwright, async_playwright
+from playwright.async_api import BrowserContext, Page, Playwright, ProxySettings, async_playwright
 
 from .config import Config
 from .exceptions import BrowserError
@@ -52,15 +52,25 @@ class BrowserManager:
 
         _clear_stale_firefox_lock(self.config.firefox_profile_dir)
 
+        # Prepare launch kwargs
+        launch_kwargs: dict[str, object] = {
+            "headless": not self.headed,
+            "downloads_path": str(self.config.download_dir),
+            "accept_downloads": True,
+            "viewport": {"width": 1920, "height": 1080},
+            "locale": "en-US",
+            "timezone_id": self.config.timezone,
+        }
+
+        # Inject proxy if configured
+        if self.config.cmp_proxy_server:
+            launch_kwargs["proxy"] = ProxySettings(server=self.config.cmp_proxy_server)
+            logger.info("Firefox proxy configured: %s", self.config.cmp_proxy_server)
+
         try:
             self._browser = await self._playwright.firefox.launch_persistent_context(
                 user_data_dir=str(self.config.firefox_profile_dir),
-                headless=not self.headed,
-                downloads_path=str(self.config.download_dir),
-                accept_downloads=True,
-                viewport={"width": 1920, "height": 1080},
-                locale="en-US",
-                timezone_id=self.config.timezone,
+                **launch_kwargs,  # type: ignore[arg-type]
             )
             logger.info("Firefox launched successfully with persistent context")
             return self._browser

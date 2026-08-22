@@ -77,6 +77,28 @@ output/Daily-Data-Usage-M2M-202609.xlsx
 
 Dashboard images are saved under the configured image/download directory and embedded in the target day sheet at `H15`.
 
+## Standalone Portable Build (Windows)
+
+To build a standalone frozen portable executable and ZIP archive:
+
+```powershell
+# 1. Build standalone executable
+.\scripts\build_exe.ps1
+
+# 2. Package into release portable zip
+.\scripts\package_portable.ps1 -Version "1.0.0"
+```
+
+The resulting zip archive will be generated in `release/Telkomsel-CMP-Automation-v1.0.0-portable.zip`.
+
+## Automated Daily Scheduling (Debian / Linux Systemd)
+
+To install the daily timer running automatically at 01:00 AM (processing $H-1$ date):
+
+```bash
+sudo bash systemd/install-timer.sh
+```
+
 ## Verification
 
 ```bash

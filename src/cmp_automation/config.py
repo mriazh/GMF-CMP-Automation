@@ -99,6 +99,13 @@ class Config(BaseSettings):
     # Timezone
     timezone: str = Field(default="Asia/Jakarta", description="Timezone for timestamp handling")
 
+    # Browser Proxy Configuration (optional)
+    cmp_proxy_server: str | None = Field(
+        default=None,
+        description="Optional proxy server URL for browser traffic (e.g. Socks5://127.0.0.1:40000 or http://proxy:8080)",
+        validation_alias=AliasChoices("cmp_proxy_server", "proxy_server", "warp_proxy_url"),
+    )
+
     # Host connectivity (all mutations are opt-in)
     connectivity_enabled: bool = Field(
         default=False, description="Enable Check Point/IMAP/WARP connectivity orchestration"

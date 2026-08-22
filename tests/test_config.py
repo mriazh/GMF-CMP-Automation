@@ -271,6 +271,81 @@ class TestConfig:
             assert config.firefox_profile_dir == profile_dir.resolve()
             assert config.download_dir == download_dir.resolve()
 
+    def test_cmp_proxy_server_default_none(self, monkeypatch):
+        """Test that cmp_proxy_server defaults to None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+
+            config = Config()
+            assert config.cmp_proxy_server is None
+
+    def test_cmp_proxy_server_via_cmp_proxy_server(self, monkeypatch):
+        """Test cmp_proxy_server via CMP_PROXY_SERVER env var."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("CMP_PROXY_SERVER", "socks5://127.0.0.1:40000")
+
+            config = Config()
+            assert config.cmp_proxy_server == "socks5://127.0.0.1:40000"
+
+    def test_cmp_proxy_server_via_proxy_server(self, monkeypatch):
+        """Test cmp_proxy_server via PROXY_SERVER env var (alias)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("PROXY_SERVER", "http://proxy:8080")
+
+            config = Config()
+            assert config.cmp_proxy_server == "http://proxy:8080"
+
+    def test_cmp_proxy_server_via_warp_proxy_url(self, monkeypatch):
+        """Test cmp_proxy_server via WARP_PROXY_URL env var (alias)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("WARP_PROXY_URL", "socks5://127.0.0.1:50000")
+
+            config = Config()
+            assert config.cmp_proxy_server == "socks5://127.0.0.1:50000"
+
 
 class TestValidatePaths:
     """Tests for validate_paths function."""

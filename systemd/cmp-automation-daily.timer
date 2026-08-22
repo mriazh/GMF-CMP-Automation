@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Telkomsel CMP Daily Usage Pipeline at 01:00 AM
+Requires=cmp-automation-daily.service
+
+[Timer]
+OnCalendar=*-*-* 01:00:00
+Persistent=true
+RandomizedDelaySec=0
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

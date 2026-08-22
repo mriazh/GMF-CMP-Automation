@@ -1,0 +1,27 @@
+[Unit]
+Description=Telkomsel CMP Automated Daily Usage Scraping & Reporting
+Documentation=https://github.com/mriazh/GMF-CMP-Automation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mriazh
+Group=mriazh
+WorkingDirectory=/home/mriazh/Github-PC/GMF-CMP-Automation
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+ExecStart=/bin/bash /home/mriazh/Github-PC/GMF-CMP-Automation/scripts/run_daily_report.sh
+
+# Security sandboxing
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/mriazh/Github-PC/GMF-CMP-Automation/output /home/mriazh/cmp_firefox_profile /tmp
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cmp-automation-daily
+
+[Install]
+WantedBy=multi-user.target
