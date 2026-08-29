@@ -21,6 +21,7 @@ from .usage_query import UsageQueryExporter, UsageReportArtifact
 logger = logging.getLogger(__name__)
 
 DAILY_SHEETS = [f"{i:02d}" for i in range(1, 32)]
+VALID_SHEET_NAMES = {"Master", "Monthly", "MONTHLY", *DAILY_SHEETS}
 
 # Styles for lookup headers and cells
 HEADER_FILL = PatternFill(start_color="FF00B0F0", end_color="FF00B0F0", fill_type="solid")
@@ -39,6 +40,27 @@ class ExcelReportGenerator:
 
     def __init__(self, config: Config) -> None:
         self.config = config
+
+    def _prune_non_standard_sheets(self, wb: openpyxl.Workbook) -> list[str]:
+        """Detect and prune/remove any sheet whose name is NOT in VALID_SHEET_NAMES."""
+        pruned = []
+        for sheet_name in list(wb.sheetnames):
+            if sheet_name not in VALID_SHEET_NAMES:
+                logger.warning(
+                    "Pruning non-standard sheet '%s' from monthly workbook", sheet_name
+                )
+                wb.remove(wb[sheet_name])
+                pruned.append(sheet_name)
+        return pruned
+
+    def prepare_monthly_workbook(
+        self,
+        template_path: Path,
+        output_path: Path,
+        query_month: date | None = None,
+    ) -> Path:
+        """Alias for prepare_template_copy."""
+        return self.prepare_template_copy(template_path, output_path, query_month)
 
     def prepare_template_copy(
         self,
@@ -74,6 +96,8 @@ class ExcelReportGenerator:
             raise ExcelReportError(
                 f"Source template is not a valid XLSX file: {template_path}"
             ) from e
+
+        self._prune_non_standard_sheets(wb)
 
         # 1. Extract and normalize lookup table from all source sheets
         lookup_map = self._extract_lookup_map(wb)
@@ -121,6 +145,8 @@ class ExcelReportGenerator:
             wb = openpyxl.load_workbook(output_path)
         except Exception as e:
             raise ExcelReportError(f"Failed to load workbook at {output_path}") from e
+
+        self._prune_non_standard_sheets(wb)
 
         if sheet_name not in wb.sheetnames:
             raise ExcelReportError(
@@ -259,7 +285,7 @@ class ExcelReportGenerator:
         return lookup_map
 
     def _write_lookup_table(self, ws: Any, lookup_map: dict[str, str]) -> None:
-        """Write normalized lookup headers at O3:P3 and data at O5:P140 with styles."""
+        """Write normalized lookup headers at O3:P3 and data at O4:P140 with styles."""
         cell_o3 = ws.cell(row=3, column=15, value="ICCID")
         cell_o3.font = copy(HEADER_FONT)
         cell_o3.fill = copy(HEADER_FILL)
@@ -273,8 +299,17 @@ class ExcelReportGenerator:
         cell_p3.border = copy(THIN_BORDER)
 
         for r in range(4, 141):
-            ws.cell(row=r, column=15, value=None)
-            ws.cell(row=r, column=16, value=None)
+            c_o = ws.cell(row=r, column=15)
+            c_o.value = None
+            c_o.font = copy(DATA_FONT)
+            c_o.border = copy(THIN_BORDER)
+            c_o.alignment = copy(DATA_ALIGNMENT_LEFT)
+
+            c_p = ws.cell(row=r, column=16)
+            c_p.value = None
+            c_p.font = copy(DATA_FONT)
+            c_p.border = copy(THIN_BORDER)
+            c_p.alignment = copy(DATA_ALIGNMENT_LEFT)
 
         for idx, (iccid, loc) in enumerate(sorted(lookup_map.items())):
             r = 4 + idx

@@ -346,6 +346,76 @@ class TestConfig:
             config = Config()
             assert config.cmp_proxy_server == "socks5://127.0.0.1:50000"
 
+    def test_excel_output_dir_default_and_alias(self, monkeypatch, tmp_path):
+        """Test excel_output_dir defaults to output/reports and respects report_dir alias."""
+        monkeypatch.chdir(tmp_path)
+        profile_dir = tmp_path / "firefox_profile"
+        download_dir = tmp_path / "downloads"
+        profile_dir.mkdir()
+        download_dir.mkdir()
+
+        monkeypatch.setenv("CMP_USERNAME", "testuser")
+        monkeypatch.setenv("CMP_PASSWORD", "testpass")
+        monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+        monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+        monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+        monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+        monkeypatch.delenv("EXCEL_OUTPUT_DIR", raising=False)
+        monkeypatch.delenv("REPORT_DIR", raising=False)
+
+        config = Config()
+        assert config.excel_output_dir == (tmp_path / "output" / "reports").resolve()
+
+        custom_report_dir = tmp_path / "custom_reports"
+        monkeypatch.setenv("REPORT_DIR", str(custom_report_dir))
+        config_alias = Config()
+        assert config_alias.excel_output_dir == custom_report_dir.resolve()
+
+    def test_warp_configuration_defaults(self, monkeypatch, tmp_path):
+        """Test WARP defaults for mode, port, and auto-connect."""
+        monkeypatch.chdir(tmp_path)
+        profile_dir = tmp_path / "firefox_profile"
+        download_dir = tmp_path / "downloads"
+        profile_dir.mkdir()
+        download_dir.mkdir()
+
+        monkeypatch.setenv("CMP_USERNAME", "testuser")
+        monkeypatch.setenv("CMP_PASSWORD", "testpass")
+        monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+        monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+        monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+        monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+        monkeypatch.delenv("WARP_MODE", raising=False)
+        monkeypatch.delenv("WARP_PROXY_PORT", raising=False)
+        monkeypatch.delenv("WARP_AUTO_CONNECT", raising=False)
+
+        config = Config()
+        assert config.warp_mode == "proxy"
+        assert config.warp_proxy_port == 40000
+        assert config.warp_auto_connect is True
+
+    def test_warp_proxy_port_bounds(self, monkeypatch, tmp_path):
+        """Test warp_proxy_port validation bounds."""
+        profile_dir = tmp_path / "firefox_profile"
+        download_dir = tmp_path / "downloads"
+        profile_dir.mkdir()
+        download_dir.mkdir()
+
+        monkeypatch.setenv("CMP_USERNAME", "testuser")
+        monkeypatch.setenv("CMP_PASSWORD", "testpass")
+        monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+        monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+        monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+        monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+
+        monkeypatch.setenv("WARP_PROXY_PORT", "1023")
+        with pytest.raises(ConfigurationError):
+            load_config()
+
+        monkeypatch.setenv("WARP_PROXY_PORT", "65536")
+        with pytest.raises(ConfigurationError):
+            load_config()
+
 
 class TestValidatePaths:
     """Tests for validate_paths function."""
@@ -467,3 +537,28 @@ class TestValidatePaths:
             config = Config()
             with pytest.raises(ConfigurationError, match="not a directory"):
                 validate_paths(config)
+
+    def test_validate_paths_creates_excel_output_dir(self, monkeypatch, tmp_path):
+        """Test that validate_paths creates nested excel_output_dir (output/reports)."""
+        profile_dir = tmp_path / "firefox_profile"
+        download_dir = tmp_path / "downloads"
+        template_file = tmp_path / "template.xlsx"
+        nested_output_dir = tmp_path / "output" / "reports"
+        profile_dir.mkdir()
+        download_dir.mkdir()
+        template_file.touch()
+
+        monkeypatch.setenv("CMP_USERNAME", "testuser")
+        monkeypatch.setenv("CMP_PASSWORD", "testpass")
+        monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+        monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+        monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+        monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+        monkeypatch.setenv("EXCEL_TEMPLATE_PATH", str(template_file))
+        monkeypatch.setenv("EXCEL_OUTPUT_DIR", str(nested_output_dir))
+
+        assert not nested_output_dir.exists()
+        config = Config()
+        validate_paths(config)
+        assert nested_output_dir.exists()
+        assert nested_output_dir.is_dir()

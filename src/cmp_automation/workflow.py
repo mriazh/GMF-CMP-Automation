@@ -1,6 +1,8 @@
 """Workflow orchestration for CMP Daily Data Usage automation."""
 
+import asyncio
 import logging
+import shutil
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -86,6 +88,45 @@ class UsageWorkflowRunner:
         tz = self.config.get_timezone()
         return [datetime.now(tz).date()]
 
+    async def _ensure_proxy_ready(self) -> None:
+        """Ensure proxy is configured and ready before browser launch."""
+        has_full_tunnel_mutation = self.connectivity_enabled and self.allow_connectivity_mutation
+        warp_mode = self.config.warp_mode.lower()
+        if self.config.warp_auto_connect and warp_mode in ("proxy", "warp"):
+            if warp_mode == "warp" and not has_full_tunnel_mutation:
+                logger.info(
+                    "WARP auto-connect utilizing isolated SOCKS5 proxy mode on port %d",
+                    self.config.warp_proxy_port,
+                )
+
+            if warp_mode == "proxy" or not has_full_tunnel_mutation:
+                warp_available = (
+                    (self.config.warp_cli_path and self.config.warp_cli_path.exists())
+                    or bool(shutil.which(str(self.config.warp_cli_path)))
+                    or bool(shutil.which("warp-cli"))
+                    or bool(shutil.which("warp-cli.exe"))
+                )
+                if warp_available:
+                    try:
+                        success = await asyncio.to_thread(
+                            self.connectivity.warp.prepare_proxy, self.config.warp_proxy_port
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "WARP auto-connect could not be established; continuing with configured proxy or direct: %s",
+                            exc,
+                        )
+                        success = False
+
+                    if success:
+                        if self.config.cmp_proxy_server is None:
+                            self.config.cmp_proxy_server = f"socks5://127.0.0.1:{self.config.warp_proxy_port}"
+                            logger.info("Auto-configured WARP SOCKS5 proxy: %s", self.config.cmp_proxy_server)
+                    else:
+                        logger.warning(
+                            "WARP auto-connect could not be established; continuing with configured proxy or direct"
+                        )
+
     async def run(self) -> Path:
         """Execute the complete workflow and return final report path."""
         logger.info("Starting CMP Daily Usage Automation workflow")
@@ -93,6 +134,7 @@ class UsageWorkflowRunner:
         if self.dry_run:
             logger.info("Running in dry-run mode: validating configuration and browser launch")
             validate_paths(self.config)
+            await self._ensure_proxy_ready()
             async with browser_context(self.config, headed=self.headed) as browser:
                 await browser.new_page()
                 logger.info("Dry run: browser launched successfully")
@@ -151,6 +193,9 @@ class UsageWorkflowRunner:
                 await self.connectivity.ensure_authentication_connectivity(
                     allow_connect=self.allow_connectivity_mutation
                 )
+
+            await self._ensure_proxy_ready()
+
             async with browser_context(self.config, headed=self.headed) as browser:
                 page = await browser.new_page()
                 self.page = page

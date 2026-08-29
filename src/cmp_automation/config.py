@@ -126,7 +126,20 @@ class Config(BaseSettings):
         default=Path(r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"),
         description="Confirmed Cloudflare WARP CLI path",
     )
-    warp_mode: str = Field(default="warp", description="Required WARP full-tunnel mode")
+    warp_mode: str = Field(
+        default="proxy",
+        description="WARP mode: 'proxy' (isolated SOCKS5) or 'warp' (full tunnel)",
+    )
+    warp_proxy_port: int = Field(
+        default=40000,
+        ge=1024,
+        le=65535,
+        description="Local SOCKS5 port for WARP proxy",
+    )
+    warp_auto_connect: bool = Field(
+        default=True,
+        description="Automatically manage warp-cli proxy connection when available",
+    )
     warp_trace_url: str = Field(
         default="https://www.cloudflare.com/cdn-cgi/trace",
         description="Approved Cloudflare trace URL",
@@ -172,8 +185,9 @@ class Config(BaseSettings):
         description="Path to monthly Excel report template",
     )
     excel_output_dir: Path = Field(
-        default=Path("output"),
+        default=Path("output/reports"),
         description="Directory for generated monthly Excel reports",
+        validation_alias=AliasChoices("excel_output_dir", "report_dir"),
     )
 
     # OTP Email subject

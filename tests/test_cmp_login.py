@@ -1,7 +1,8 @@
 """Tests for the CMP login flow with IMAP-based OTP retrieval."""
 
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -533,6 +534,7 @@ class TestAuthenticatedState:
         # The bounded retry must fire twice (3 windows, 2 reloads) and still
         # raise on a sustained slow mount.
         assert page.reload.await_count == 2
+        page.screenshot.assert_awaited_once_with(path=str(Path("output/images/error_auth_failed.png")))
 
     @pytest.mark.asyncio
     async def test_auth_dom_summary_is_structural_only(self, login):
@@ -669,3 +671,220 @@ class TestAuthenticatedState:
         # Bounded: one failing wait per window (3 windows), two reloads.
         assert page.wait_for_timeout.await_count == 3
         assert page.reload.await_count == 2
+
+
+class TestSubmitToken:
+    """Tests for OTP token submission resilience and fallbacks."""
+
+    @pytest.fixture
+    def login(self, config):
+        mailbox = MailboxClient(config)
+        return CMPLogin(config, mailbox)
+
+    def test_token_submit_selectors_expanded(self):
+        """TOKEN_SUBMIT_SELECTORS must contain the full set of fallback selectors in order."""
+        expected = [
+            "#login input[name='_eventId_submit'][type='submit']",
+            "#login input[name='_eventId_submit']",
+            "#login input[type='submit']",
+            "#login button[type='submit']",
+            "#login button",
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button:has-text("Submit")',
+            'button:has-text("Verify")',
+            'button:has-text("Login")',
+            'input[value*="Submit" i]',
+            'input[value*="Verify" i]',
+            'input[value*="Login" i]',
+        ]
+        assert CMPLogin.TOKEN_SUBMIT_SELECTORS == expected
+
+    @pytest.mark.asyncio
+    async def test_submit_token_button_click_success(self, login):
+        """Button click with timeout=3000 succeeds on the first candidate."""
+        button = MagicMock()
+        button.first = button
+        button.count = AsyncMock(return_value=1)
+        button.click = AsyncMock()
+
+        page = MagicMock()
+        page.locator = MagicMock(return_value=button)
+
+        with patch.object(login, "_try_fill", new=AsyncMock(return_value=True)):
+            await login._submit_token(page, "123456")
+
+        button.click.assert_awaited_once_with(timeout=3000)
+
+    @pytest.mark.asyncio
+    async def test_submit_token_button_click_fallback_to_force(self, login):
+        """When normal click times out or errors, force=True click is attempted with timeout=3000."""
+        button = MagicMock()
+        button.first = button
+        button.count = AsyncMock(return_value=1)
+        button.click = AsyncMock(side_effect=[PlaywrightTimeoutError("timeout"), None])
+
+        page = MagicMock()
+        page.locator = MagicMock(return_value=button)
+
+        with patch.object(login, "_try_fill", new=AsyncMock(return_value=True)):
+            await login._submit_token(page, "123456")
+
+        assert button.click.await_count == 2
+        button.click.assert_has_awaits([
+            call(timeout=3000),
+            call(force=True, timeout=3000),
+        ])
+
+    @pytest.mark.asyncio
+    async def test_submit_token_button_click_moves_to_next_candidate_when_force_fails(self, login):
+        """When both normal and force click fail on one button, next candidate is tried."""
+        btn1 = MagicMock()
+        btn1.first = btn1
+        btn1.count = AsyncMock(return_value=1)
+        btn1.click = AsyncMock(side_effect=[PlaywrightTimeoutError("timeout"), PlaywrightError("error")])
+
+        btn2 = MagicMock()
+        btn2.first = btn2
+        btn2.count = AsyncMock(return_value=1)
+        btn2.click = AsyncMock()
+
+        locators = {
+            login.TOKEN_SUBMIT_SELECTORS[0]: btn1,
+            login.TOKEN_SUBMIT_SELECTORS[1]: btn2,
+        }
+
+        page = MagicMock()
+        page.locator = MagicMock(
+            side_effect=lambda sel: locators.get(sel, MagicMock(first=MagicMock(count=AsyncMock(return_value=0))))
+        )
+
+        with patch.object(login, "_try_fill", new=AsyncMock(return_value=True)):
+            await login._submit_token(page, "123456")
+
+        assert btn1.click.await_count == 2
+        btn2.click.assert_awaited_once_with(timeout=3000)
+
+    @pytest.mark.asyncio
+    async def test_submit_token_falls_back_to_enter_on_token_field(self, login):
+        """When all button clicks fail, falls back to pressing Enter on the token input field."""
+        button = MagicMock()
+        button.first = button
+        button.count = AsyncMock(return_value=1)
+        button.click = AsyncMock(side_effect=PlaywrightTimeoutError("timeout"))
+
+        field = MagicMock()
+        field.first = field
+        field.count = AsyncMock(return_value=1)
+        field.press = AsyncMock()
+
+        def locator_side_effect(selector: str):
+            if selector in login.TOKEN_SUBMIT_SELECTORS:
+                return button
+            if selector in login.TOKEN_INPUT_SELECTORS:
+                return field
+            return MagicMock(first=MagicMock(count=AsyncMock(return_value=0)))
+
+        page = MagicMock()
+        page.locator = MagicMock(side_effect=locator_side_effect)
+
+        with patch.object(login, "_try_fill", new=AsyncMock(return_value=True)):
+            await login._submit_token(page, "123456")
+
+        field.press.assert_awaited_once_with("Enter")
+
+    @pytest.mark.asyncio
+    async def test_submit_token_falls_back_to_enter_when_no_buttons_found(self, login):
+        """When no submit buttons match any selector, pressing Enter on token input succeeds."""
+        button = MagicMock()
+        button.first = button
+        button.count = AsyncMock(return_value=0)
+
+        field = MagicMock()
+        field.first = field
+        field.count = AsyncMock(return_value=1)
+        field.press = AsyncMock()
+
+        def locator_side_effect(selector: str):
+            if selector in login.TOKEN_SUBMIT_SELECTORS:
+                return button
+            if selector in login.TOKEN_INPUT_SELECTORS:
+                return field
+            return MagicMock(first=MagicMock(count=AsyncMock(return_value=0)))
+
+        page = MagicMock()
+        page.locator = MagicMock(side_effect=locator_side_effect)
+
+        with patch.object(login, "_try_fill", new=AsyncMock(return_value=True)):
+            await login._submit_token(page, "123456")
+
+        field.press.assert_awaited_once_with("Enter")
+
+    @pytest.mark.asyncio
+    async def test_submit_token_enter_fallback_skips_failing_field_to_next(self, login):
+        """When pressing Enter on the first token input selector raises, next selector is tried."""
+        button = MagicMock()
+        button.first = button
+        button.count = AsyncMock(return_value=0)
+
+        field1 = MagicMock()
+        field1.first = field1
+        field1.count = AsyncMock(return_value=1)
+        field1.press = AsyncMock(side_effect=PlaywrightError("Element detached"))
+
+        field2 = MagicMock()
+        field2.first = field2
+        field2.count = AsyncMock(return_value=1)
+        field2.press = AsyncMock()
+
+        field_locators = {
+            login.TOKEN_INPUT_SELECTORS[0]: field1,
+            login.TOKEN_INPUT_SELECTORS[1]: field2,
+        }
+
+        def locator_side_effect(selector: str):
+            if selector in login.TOKEN_SUBMIT_SELECTORS:
+                return button
+            if selector in field_locators:
+                return field_locators[selector]
+            return MagicMock(first=MagicMock(count=AsyncMock(return_value=0)))
+
+        page = MagicMock()
+        page.locator = MagicMock(side_effect=locator_side_effect)
+
+        with patch.object(login, "_try_fill", new=AsyncMock(return_value=True)):
+            await login._submit_token(page, "123456")
+
+        field1.press.assert_awaited_once_with("Enter")
+        field2.press.assert_awaited_once_with("Enter")
+
+    @pytest.mark.asyncio
+    async def test_submit_token_raises_when_all_buttons_and_enter_fail(self, login):
+        """When neither submit button nor Enter fallback succeeds, AuthenticationError is raised."""
+        button = MagicMock()
+        button.first = button
+        button.count = AsyncMock(return_value=0)
+
+        field = MagicMock()
+        field.first = field
+        field.count = AsyncMock(return_value=0)
+
+        def locator_side_effect(selector: str):
+            if selector in login.TOKEN_SUBMIT_SELECTORS:
+                return button
+            return field
+
+        page = MagicMock()
+        page.locator = MagicMock(side_effect=locator_side_effect)
+
+        with patch.object(login, "_try_fill", new=AsyncMock(return_value=True)):
+            with pytest.raises(AuthenticationError, match="Could not find token submit button"):
+                await login._submit_token(page, "123456")
+
+    @pytest.mark.asyncio
+    async def test_submit_token_raises_when_token_field_not_found(self, login):
+        """When token input field could not be filled, AuthenticationError is raised immediately."""
+        page = MagicMock()
+        with patch.object(login, "_try_fill", new=AsyncMock(return_value=False)):
+            with pytest.raises(AuthenticationError, match="Could not find token input field"):
+                await login._submit_token(page, "123456")

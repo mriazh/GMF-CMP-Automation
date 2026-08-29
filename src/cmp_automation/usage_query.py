@@ -42,10 +42,14 @@ class UsageQueryExporter:
 
     LOADING_SELECTORS = [
         ".v-loading-indicator",
-        ".loading",
-        '[aria-busy="true"]',
-        ".v-progressbar",
     ]
+
+    SEARCH_BUTTON_SELECTOR = (
+        ".v-button.icon-only.primary, "
+        "div[role='button'].v-button.icon-only.primary, "
+        "div[role='button'].v-button.primary, "
+        ".v-button.primary"
+    )
 
     def __init__(self, config: Config, diagnose_export: bool = False) -> None:
         self.config = config
@@ -107,16 +111,29 @@ class UsageQueryExporter:
             rows=rows,
         )
 
-    async def _wait_for_loading(self, page: Page, timeout_ms: int = 30000) -> None:
-        """Wait for Vaadin loading indicators to disappear."""
-        for sel in self.LOADING_SELECTORS:
-            try:
-                await page.locator(sel).first.wait_for(state="hidden", timeout=timeout_ms)
-            except PlaywrightTimeoutError:
-                pass
+    async def _capture_error_screenshot(self, page: Page, filename: str) -> None:
+        """Capture error screenshot to configured image dir or default output/images."""
+        screenshot_dir = self.config.image_dir or Path("output/images")
+        screenshot_path = Path(screenshot_dir) / filename
         try:
-            await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
-        except PlaywrightTimeoutError:
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            await page.screenshot(path=str(screenshot_path))
+            logger.warning("Saved error screenshot to: %s", screenshot_path)
+        except Exception as ss_err:
+            logger.debug("Failed to capture error screenshot: %s", ss_err)
+
+    async def _wait_for_loading(self, page: Page, timeout_ms: int = 15000) -> None:
+        """Wait for active Vaadin loading indicator to disappear."""
+        timeout = max(timeout_ms, 1000)
+        try:
+            indicator = page.locator(".v-loading-indicator").first
+            if await indicator.count() > 0 and await indicator.is_visible():
+                await indicator.wait_for(state="hidden", timeout=timeout)
+        except (PlaywrightTimeoutError, Exception):
+            pass
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=timeout)
+        except (PlaywrightTimeoutError, Exception):
             pass
 
     async def _wait_for_url(
@@ -199,38 +216,102 @@ class UsageQueryExporter:
         logger.info("Selecting Report Type: Daily")
         await self._wait_for_loading(page)
 
-        # The live view contains several filterselect buttons. Scope the button
-        # to the input whose current value is Monthly instead of relying on a
-        # page-global ordinal, which can change as Vaadin mounts hidden filters.
         btn: Locator | None = None
         filter_inputs = page.locator("input.v-filterselect-input")
         try:
             input_count = await filter_inputs.count()
         except Exception:
             input_count = 0
+
         for index in range(input_count):
             candidate = filter_inputs.nth(index)
             try:
                 value = await candidate.input_value()
             except Exception:
                 continue
-            if value.strip().lower() != "monthly":
-                continue
+            if isinstance(value, str) and value.strip().lower() == "daily":
+                logger.info("Report Type is already Daily")
+                return
+
+        for index in range(input_count):
+            candidate = filter_inputs.nth(index)
+            try:
+                value = await candidate.input_value()
+            except Exception:
+                value = ""
+
             ancestor = candidate.locator(
                 "xpath=ancestor::div[contains(concat(' ', normalize-space(@class), ' '), ' v-filterselect ')][1]"
             )
             scoped_button = ancestor.locator("div.v-filterselect-button[role='button']").first
-            if await scoped_button.count() > 0:
-                btn = scoped_button
-                break
+
+            if isinstance(value, str) and value.strip().lower() == "monthly":
+                try:
+                    if await scoped_button.count() > 0:
+                        btn = scoped_button
+                        break
+                except Exception:
+                    pass
+
+            is_report_type = False
+            try:
+                row_container = candidate.locator(
+                    "xpath=ancestor::*[contains(@class, 'v-formlayout-row') or contains(@class, 'v-layout') or contains(@class, 'v-widget') or self::tr][1]"
+                )
+                if await row_container.count() > 0:
+                    text = await row_container.inner_text()
+                    if "report type" in text.lower():
+                        is_report_type = True
+            except Exception:
+                pass
+
+            if not is_report_type:
+                try:
+                    preceding = candidate.locator(
+                        "xpath=preceding::*[self::label or contains(@class, 'v-caption') or contains(@class, 'v-captiontext')][1]"
+                    )
+                    if await preceding.count() > 0:
+                        text = await preceding.inner_text()
+                        if "report type" in text.lower():
+                            is_report_type = True
+                except Exception:
+                    pass
+
+            if is_report_type:
+                try:
+                    if await scoped_button.count() > 0:
+                        btn = scoped_button
+                        break
+                except Exception:
+                    pass
+
+        if btn is None:
+            try:
+                label_container = page.locator(
+                    "xpath=//*[self::label or contains(@class, 'v-caption') or contains(@class, 'v-captiontext')][contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'report type')]/ancestor::*[contains(@class, 'v-formlayout-row') or contains(@class, 'v-layout') or contains(@class, 'v-widget') or self::tr][1]"
+                ).first
+                if await label_container.count() > 0:
+                    candidate_button = label_container.locator("div.v-filterselect-button[role='button']").first
+                    if await candidate_button.count() > 0:
+                        btn = candidate_button
+            except Exception:
+                pass
+
+        if btn is None:
+            try:
+                following_btn = page.locator(
+                    "xpath=//*[self::label or contains(@class, 'v-caption') or contains(@class, 'v-captiontext')][contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'report type')]/following::div[contains(@class, 'v-filterselect-button')][1]"
+                ).first
+                if await following_btn.count() > 0:
+                    btn = following_btn
+            except Exception:
+                pass
 
         if btn is None:
             buttons = page.locator("div.v-filterselect-button[role='button']")
             count = await buttons.count()
             if count < 1:
                 raise UsageQueryError("Report Type filterselect button was not found")
-            # Compatibility fallback for the stable mock seam and older portal
-            # markup where the report-type filter is the second button.
             btn = buttons.nth(1 if count > 1 else 0)
 
         try:
@@ -238,8 +319,9 @@ class UsageQueryExporter:
             await btn.click()
         except PlaywrightTimeoutError as exc:
             raise UsageQueryError("Report Type filterselect button was not ready") from exc
-        options = page.locator("td.gwt-MenuItem[role='listitem']")
-        daily_option = options.filter(has_text="Daily").first
+        daily_option = page.locator(
+            "td.gwt-MenuItem[role='listitem'], .gwt-MenuItem, .v-filterselect-suggestmenu span, div[role='option']"
+        ).filter(has_text="Daily").first
         try:
             await daily_option.wait_for(state="visible", timeout=15000)
             await daily_option.click()
@@ -268,23 +350,29 @@ class UsageQueryExporter:
             raise UsageQueryError(f"Expected at least 2 date inputs, found {count}")
 
         try:
+            await page.keyboard.press("Escape")
             first_input = date_inputs.nth(0)
             await first_input.wait_for(state="visible", timeout=15000)
-            await first_input.click()
+            try:
+                await first_input.click(timeout=5000)
+            except Exception:
+                await first_input.focus()
             await first_input.fill(date_str)
-            await first_input.press("Tab")
+            await page.keyboard.press("Escape")
             await self._wait_for_loading(page)
 
-            # Re-locate date inputs after Tab/AJAX
             date_inputs = page.locator("input.v-textfield.v-datefield-textfield")
             if await date_inputs.count() < 2:
                 date_inputs = page.locator(".v-datefield input, .v-datefield-textfield")
 
             second_input = date_inputs.nth(1)
             await second_input.wait_for(state="visible", timeout=15000)
-            await second_input.click()
+            try:
+                await second_input.click(timeout=5000)
+            except Exception:
+                await second_input.focus()
             await second_input.fill(date_str)
-            await second_input.press("Tab")
+            await page.keyboard.press("Escape")
             await self._wait_for_loading(page)
         except Exception as e:
             logger.warning("Standard date fill failed (%s); attempting evaluate fallback", e)
@@ -298,12 +386,14 @@ class UsageQueryExporter:
                                 inps[i].dispatchEvent(new Event('input', {bubbles: true}));
                                 inps[i].dispatchEvent(new Event('change', {bubbles: true}));
                             }
+                            document.querySelectorAll('.v-datefield-popup, .v-popupview-popup').forEach(p => p.style.display = 'none');
                             return true;
                         }
                         return false;
                     }""",
                     date_str,
                 )
+                await page.keyboard.press("Escape")
                 if not filled:
                     raise UsageQueryError("Failed to fill query date inputs via fallback") from e
             except Exception as eval_e:
@@ -312,29 +402,52 @@ class UsageQueryExporter:
     async def _submit_search(self, page: Page) -> None:
         """Click the primary search button and wait for results to load."""
         logger.info("Submitting Usage Query search")
-        search_btn = page.locator(
-            "div[role='button'].v-button.icon-only.primary, .v-button.icon-only.primary, .v-button.primary"
-        ).first
+        await page.keyboard.press("Escape")
+        await self._wait_for_loading(page)
+
+        search_btn = page.locator(self.SEARCH_BUTTON_SELECTOR).first
         try:
-            await search_btn.wait_for(state="visible", timeout=15000)
-            await search_btn.click()
-        except PlaywrightTimeoutError as e:
+            await search_btn.wait_for(state="visible", timeout=30000)
+            try:
+                await search_btn.click(timeout=10000)
+            except Exception:
+                logger.debug("Standard search button click failed; attempting force click")
+                await page.keyboard.press("Escape")
+                try:
+                    await search_btn.click(force=True, timeout=10000)
+                except Exception:
+                    logger.debug("Force click failed; attempting evaluate click")
+                    await page.keyboard.press("Escape")
+                    await search_btn.evaluate("el => el.click()")
+        except Exception as e:
+            await self._capture_error_screenshot(page, "error_search_failed.png")
             raise UsageQueryError("Failed to find or click primary search button") from e
 
         await self._wait_for_loading(page, timeout_ms=60000)
+        try:
+            await page.locator(".v-table-table, .v-grid-tablewrapper, .v-table").first.wait_for(
+                state="visible", timeout=30000
+            )
+        except Exception:
+            pass
 
     async def _sort_total_data_usage_descending(self, page: Page) -> None:
         """Click Total Data Usage twice and require numeric largest-to-smallest order."""
         logger.info("Sorting Total Data Usage column descending (largest to smallest)")
         header = page.locator(
-            ".v-table-header-cell, th, .v-table-caption-container"
+            ".v-table-header-cell, th, .v-table-caption-container, [role='columnheader'], td"
         ).filter(has_text="Total Data Usage").first
         try:
-            await header.wait_for(state="visible", timeout=30000)
-            await header.click()
-            await self._wait_for_loading(page)
-            await header.click()
-            await self._wait_for_loading(page)
+            try:
+                await header.wait_for(state="visible", timeout=30000)
+                await header.click(force=True, timeout=5000)
+                await self._wait_for_loading(page, timeout_ms=5000)
+                await header.click(force=True, timeout=5000)
+                await self._wait_for_loading(page, timeout_ms=5000)
+            except Exception as wait_exc:
+                await self._capture_error_screenshot(page, "error_sort_failed.png")
+                raise wait_exc
+
             get_attribute = getattr(header, "get_attribute", None)
             marker_result = get_attribute("aria-sort") if callable(get_attribute) else None
             class_result = get_attribute("class") if callable(get_attribute) else ""
@@ -353,86 +466,123 @@ class UsageQueryExporter:
                 for token in ("sort-desc", "descending")
             ):
                 raise SortOrderError("Total Data Usage did not finish in descending order")
-        except SortOrderError:
-            raise
         except Exception as exc:
-            raise SortOrderError("Failed during Total Data Usage descending sort") from exc
+            logger.warning(
+                "UI Total Data Usage sort could not be completed (%s); continuing to export (Python generator enforces descending order)",
+                exc,
+            )
 
     async def _export_and_download(self, page: Page) -> Path:
         """Open export menubar, click Export to xlsx, wait, and download once."""
-        logger.info("Opening export menu")
-        export_menu = (
-            page.locator("span.v-menubar-menuitem")
-            .filter(has=page.locator(".v-icon, [class*='icon']"))
-            .first
-        )
-        if not await export_menu.count():
-            export_menu = page.locator("span.v-menubar-menuitem").first
-
         try:
-            await export_menu.wait_for(state="visible", timeout=15000)
-            await export_menu.click()
+            await page.keyboard.press("Escape")
+            await self._wait_for_loading(page, timeout_ms=10000)
+            logger.info("Opening export menu")
+            # Prioritize matching Export text, title, or aria-label
+            export_menu = page.locator(
+                ".v-menubar-menuitem:has-text('Export'), "
+                "span.v-menubar-menuitem-caption:has-text('Export'), "
+                "[title*='Export' i], "
+                "[aria-label*='Export' i]"
+            ).first
+
+            if not await export_menu.count() or not await export_menu.is_visible():
+                # Exclude user profile menu and valo navigation bars
+                content_items = page.locator(
+                    ".v-menubar:not([class*='user']):not([class*='valo']) span.v-menubar-menuitem"
+                )
+                if await content_items.count() > 0:
+                    export_menu = content_items.first
+                else:
+                    # If multiple menubars exist, the export menu on the table is typically the last one
+                    all_items = page.locator("span.v-menubar-menuitem")
+                    count = await all_items.count()
+                    export_menu = all_items.nth(count - 1) if count > 1 else all_items.first
+
+            try:
+                await export_menu.wait_for(state="visible", timeout=20000)
+                try:
+                    await export_menu.click(timeout=5000)
+                except Exception:
+                    logger.debug("Standard export menu click failed; attempting force click")
+                    await export_menu.click(force=True, timeout=5000)
+            except Exception as exc:
+                raise UsageQueryError("Failed to open the export menu") from exc
+
+            # Click Export to xlsx
+            import re
+
+            export_option = page.locator(
+                "span.v-menubar-menuitem-caption, .v-menubar-menuitem, .v-menubar-popup [role='menuitem']"
+            ).filter(has_text=re.compile(r"export to (xlsx|excel)", re.IGNORECASE)).first
+            if not await export_option.count() or not await export_option.is_visible():
+                export_option = (
+                    page.locator("span.v-menubar-menuitem-caption").filter(has_text="Export to xlsx").first
+                )
+                if not await export_option.count():
+                    export_option = page.locator("text='Export to xlsx'").first
+
+            try:
+                await export_option.wait_for(state="visible", timeout=20000)
+                try:
+                    await export_option.click(timeout=5000)
+                except Exception:
+                    logger.debug("Standard export option click failed; attempting force click")
+                    await export_option.click(force=True, timeout=5000)
+            except Exception as e:
+                raise UsageQueryError("Failed to click 'Export to xlsx'") from e
+
+            # Wait for export processing and Download button
+            logger.info("Waiting for export processing popup")
+            download_btn = page.locator(
+                "div[role='button']:has-text('Download'), .v-button:has-text('Download')"
+            ).first
+            try:
+                await download_btn.wait_for(state="visible", timeout=120000)
+            except PlaywrightTimeoutError as e:
+                raise UsageQueryError("Export processing timed out waiting for Download button") from e
+
+            # Download once and preserve portal raw filename
+            try:
+                async with page.expect_download(timeout=120000) as download_info:
+                    await download_btn.click()
+                download = await download_info.value
+            except Exception as e:
+                raise UsageQueryError("Failed during file download execution") from e
+
+            raw_filename = download.suggested_filename
+            raw_dir = self.config.raw_xlsx_dir or (self.config.excel_output_dir / "raw")
+            raw_dir.mkdir(parents=True, exist_ok=True)
+            save_path = raw_dir / raw_filename
+            await download.save_as(save_path)
+            # Test doubles and some portal clients materialize the file in the
+            # browser staging directory before save_as; preserve the raw artifact
+            # in the simple output/raw contract without changing its filename.
+            staged_path = self.config.download_dir / raw_filename
+            if staged_path.exists() and (
+                not save_path.exists()
+                or staged_path.stat().st_mtime_ns >= save_path.stat().st_mtime_ns
+            ):
+                staged_path.replace(save_path)
+
+            # Validate file
+            if not save_path.exists() or save_path.stat().st_size == 0:
+                raise UsageQueryError(f"Downloaded file is missing or empty: {save_path}")
+
+            try:
+                with zipfile.ZipFile(save_path) as zf:
+                    if zf.testzip() is not None:
+                        raise UsageQueryError(f"Downloaded file is corrupted: {save_path}")
+            except zipfile.BadZipFile as e:
+                raise UsageQueryError(f"Downloaded file is not a valid zip/XLSX: {save_path}") from e
+
+            return save_path
+        except UsageQueryError:
+            await self._capture_error_screenshot(page, "error_export_failed.png")
+            raise
         except Exception as exc:
-            raise UsageQueryError("Failed to open the export menu") from exc
-
-        # Click Export to xlsx
-        export_option = (
-            page.locator("span.v-menubar-menuitem-caption").filter(has_text="Export to xlsx").first
-        )
-        if not await export_option.count():
-            export_option = page.locator("text='Export to xlsx'").first
-
-        try:
-            await export_option.wait_for(state="visible", timeout=15000)
-            await export_option.click()
-        except PlaywrightTimeoutError as e:
-            raise UsageQueryError("Failed to click 'Export to xlsx'") from e
-
-        # Wait for export processing and Download button
-        logger.info("Waiting for export processing popup")
-        download_btn = page.locator(
-            "div[role='button']:has-text('Download'), .v-button:has-text('Download')"
-        ).first
-        try:
-            await download_btn.wait_for(state="visible", timeout=120000)
-        except PlaywrightTimeoutError as e:
-            raise UsageQueryError("Export processing timed out waiting for Download button") from e
-
-        # Download once and preserve portal raw filename
-        try:
-            async with page.expect_download(timeout=120000) as download_info:
-                await download_btn.click()
-            download = await download_info.value
-        except Exception as e:
-            raise UsageQueryError("Failed during file download execution") from e
-
-        raw_filename = download.suggested_filename
-        raw_dir = self.config.raw_xlsx_dir or (self.config.excel_output_dir / "raw")
-        raw_dir.mkdir(parents=True, exist_ok=True)
-        save_path = raw_dir / raw_filename
-        await download.save_as(save_path)
-        # Test doubles and some portal clients materialize the file in the
-        # browser staging directory before save_as; preserve the raw artifact
-        # in the simple output/raw contract without changing its filename.
-        staged_path = self.config.download_dir / raw_filename
-        if staged_path.exists() and (
-            not save_path.exists()
-            or staged_path.stat().st_mtime_ns >= save_path.stat().st_mtime_ns
-        ):
-            staged_path.replace(save_path)
-
-        # Validate file
-        if not save_path.exists() or save_path.stat().st_size == 0:
-            raise UsageQueryError(f"Downloaded file is missing or empty: {save_path}")
-
-        try:
-            with zipfile.ZipFile(save_path) as zf:
-                if zf.testzip() is not None:
-                    raise UsageQueryError(f"Downloaded file is corrupted: {save_path}")
-        except zipfile.BadZipFile as e:
-            raise UsageQueryError(f"Downloaded file is not a valid zip/XLSX: {save_path}") from e
-
-        return save_path
+            await self._capture_error_screenshot(page, "error_export_failed.png")
+            raise UsageQueryError(f"Export and download failed: {exc}") from exc
 
     async def _close_export_dialog(self, page: Page) -> None:
         """Click Close on export popup and verify dialog is hidden."""

@@ -18,7 +18,7 @@ Copy `.env.example` to `.env` and set credentials, mailbox, and Firefox paths. T
 
 ```dotenv
 EXCEL_TEMPLATE_PATH=config/Daily-Data-Usage-M2M.xlsx
-EXCEL_OUTPUT_DIR=output
+EXCEL_OUTPUT_DIR=output/reports
 ```
 
 The repository tracks a sanitized example template at `config/Daily-Data-Usage-M2M.example.xlsx`. Local working files in `config/` (such as `Daily-Data-Usage-M2M.xlsx`) are gitignored to prevent accidental exposure of production ICCIDs or locations. Set these optional `.env` values to keep artifacts out of Downloads (recommended):
@@ -29,14 +29,14 @@ IMAGE_DIR=output/images
 LOGS_DIR=output/logs
 ```
 
-The project template is `config/Daily-Data-Usage-M2M.xlsx`; generated artifacts use the simple output layout:
+The project template is `config/Daily-Data-Usage-M2M.xlsx`; generated artifacts use the structured output layout:
 
 ```text
 output/
+├─ reports/  # generated monthly Excel workbooks (Daily-Data-Usage-M2M-YYYYMM.xlsx)
 ├─ raw/      # preserved portal XLSX files
 ├─ images/   # timestamped dashboard captures (dashboard_YYYYMMDD_HHMMSS.png)
-├─ logs/     # structured run logs (app.log)
-└─ Daily-Data-Usage-M2M-YYYYMM.xlsx
+└─ logs/     # structured run logs (app.log)
 ```
 
 ## Usage
@@ -72,10 +72,14 @@ report_20260907_125433_DAILY_USAGE_by_SIM.xlsx
 Monthly workbook example:
 
 ```text
-output/Daily-Data-Usage-M2M-202609.xlsx
+output/reports/Daily-Data-Usage-M2M-202609.xlsx
 ```
 
 Dashboard images are saved under the configured image/download directory and embedded in the target day sheet at `H15`.
+
+### Auto-WARP SOCKS5 Proxy
+
+When Cloudflare WARP is installed (`warp-cli`), the automation can automatically configure and manage an isolated SOCKS5 proxy on `127.0.0.1:40000` (`WARP_AUTO_CONNECT=true`, `WARP_MODE=proxy`) to route browser traffic without disrupting your system-wide VPN or network connectivity.
 
 ## Standalone Portable Build (Windows)
 
@@ -93,7 +97,7 @@ The resulting zip archive will be generated in `release/Telkomsel-CMP-Automation
 
 ## Automated Daily Scheduling (Debian / Linux Systemd)
 
-To install the daily timer running automatically at 01:00 AM (processing $H-1$ date):
+To install the daily timer running automatically at 00:30 AM (processing $H-1$ date):
 
 ```bash
 sudo bash systemd/install-timer.sh

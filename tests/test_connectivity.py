@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -122,3 +122,83 @@ async def test_controller_runs_phases_without_mutating_tunnels(config: Config) -
     checkpoint.disconnect.assert_called_once_with(allow_disconnect=False)
     warp.ensure_full_tunnel.assert_called_once_with(allow_connect=False)
     warp.disconnect.assert_called_once_with(allow_disconnect=False)
+
+
+def test_is_proxy_listening(config: Config) -> None:
+    client = WarpClient(config)
+    with patch("socket.create_connection") as mock_conn:
+        mock_conn.return_value.__enter__ = Mock()
+        mock_conn.return_value.__exit__ = Mock(return_value=False)
+        assert client.is_proxy_listening(port=40000) is True
+
+    with patch("socket.create_connection", side_effect=OSError("Connection refused")):
+        assert client.is_proxy_listening(port=40000) is False
+
+
+def test_prepare_proxy_already_connected(config: Config) -> None:
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return completed("Status update: Connected\nMode: Proxy\n")
+
+    client = WarpClient(config, runner=runner)
+    with patch.object(client, "is_proxy_listening", return_value=True):
+        res = client.prepare_proxy(port=40000)
+        assert res is True
+        assert [c[1:] for c in commands] == [["status"]]
+        assert client.owned is False
+
+
+def test_prepare_proxy_success_flow(config: Config) -> None:
+    commands: list[list[str]] = []
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[1:] == ["status"]:
+            return completed("Status update: Connected\nMode: Proxy\n")
+        return completed()
+
+    listening_sequence = [False, True]
+
+    def mock_listening(*args: object, **kwargs: object) -> bool:
+        if listening_sequence:
+            return listening_sequence.pop(0)
+        return True
+
+    sleeps: list[float] = []
+    client = WarpClient(config, runner=runner, sleeper=sleeps.append)
+    with patch.object(client, "is_proxy_listening", side_effect=mock_listening):
+        res = client.prepare_proxy(port=40000)
+        assert res is True
+        assert client.owned is True
+        assert [c[1:] for c in commands[:3]] == [
+            ["mode", "proxy"],
+            ["proxy", "port", "40000"],
+            ["connect"],
+        ]
+        assert len(sleeps) >= 1
+
+
+def test_prepare_proxy_command_failure(config: Config) -> None:
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        if "mode" in command:
+            return completed(returncode=1)
+        return completed()
+
+    client = WarpClient(config, runner=runner)
+    with patch.object(client, "is_proxy_listening", return_value=False):
+        res = client.prepare_proxy(port=40000)
+        assert res is False
+        assert client.owned is False
+
+
+def test_prepare_proxy_timeout_failure(config: Config) -> None:
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return completed("Status update: Disconnected\nMode: Proxy\n")
+
+    client = WarpClient(config, runner=runner, sleeper=lambda _: None)
+    with patch.object(client, "is_proxy_listening", return_value=False):
+        res = client.prepare_proxy(port=40000, retry_limit=2, poll_interval=0.1)
+        assert res is False
+        assert client.owned is False

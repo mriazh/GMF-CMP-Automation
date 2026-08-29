@@ -235,3 +235,58 @@ class TestExcelReportGenerator:
         bad_tpl.write_bytes(b"not a zip file")
         with pytest.raises(ExcelReportError, match="not a valid XLSX"):
             generator.prepare_template_copy(bad_tpl, tmp_path / "out.xlsx")
+
+    def test_pruning_non_standard_sheets_in_prepare_and_update(
+        self, generator: ExcelReportGenerator, config: Config, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Test that non-standard sheets like Sheet1 and AGS 2026 are pruned."""
+        dirty_template = tmp_path / "dirty_template.xlsx"
+        wb = openpyxl.Workbook()
+        wb.create_sheet("01")
+        wb.create_sheet("Master")
+        wb.create_sheet("Monthly")
+        wb.create_sheet("Sheet1")
+        wb.create_sheet("AGS 2026")
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+        wb.save(dirty_template)
+
+        out_path = tmp_path / "cleaned_out.xlsx"
+        generator.prepare_monthly_workbook(dirty_template, out_path)
+
+        wb_out = openpyxl.load_workbook(out_path)
+        assert "Sheet1" not in wb_out.sheetnames
+        assert "AGS 2026" not in wb_out.sheetnames
+        assert "01" in wb_out.sheetnames
+        assert "Master" in wb_out.sheetnames
+        assert "Monthly" in wb_out.sheetnames
+        assert "Pruning non-standard sheet 'Sheet1' from monthly workbook" in caplog.text
+        assert "Pruning non-standard sheet 'AGS 2026' from monthly workbook" in caplog.text
+
+        # Add a non-standard sheet to the saved workbook and call update_daily_sheet
+        wb_out.create_sheet("Sheet1")
+        wb_out.create_sheet("AGS 2026")
+        wb_out.save(out_path)
+
+        generator.update_daily_sheet(out_path, date(2026, 3, 1), [])
+        wb_updated = openpyxl.load_workbook(out_path)
+        assert "Sheet1" not in wb_updated.sheetnames
+        assert "AGS 2026" not in wb_updated.sheetnames
+
+    def test_default_output_reports_path_resolution(
+        self, generator: ExcelReportGenerator, config: Config, tmp_path: Path
+    ) -> None:
+        """Test that generate_report places monthly workbook inside config.excel_output_dir (output/reports)."""
+        reports_dir = tmp_path / "output" / "reports"
+        config.excel_output_dir = reports_dir
+
+        artifact = UsageReportArtifact(
+            raw_path=tmp_path / "raw.xlsx",
+            query_date=date(2026, 4, 2),
+            rows=[{"date": "2026-04-02", "iccid": "8962000000000001", "total_usage_bytes": 1000}],
+        )
+
+        res_path = generator.generate_report(artifact_or_path=artifact, query_date=date(2026, 4, 2))
+        assert res_path.parent == reports_dir
+        assert res_path.name == "Daily-Data-Usage-M2M-202604.xlsx"
+        assert res_path.exists()

@@ -9,6 +9,7 @@ tunnels established by this run may be disconnected with explicit permission.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import socket
 import ssl
@@ -23,6 +24,8 @@ from urllib.request import Request, urlopen
 
 from .config import Config
 from .exceptions import CMPAutomationError
+
+logger = logging.getLogger(__name__)
 
 
 class ConnectivityError(CMPAutomationError):
@@ -185,12 +188,79 @@ class WarpClient:
         executable: Path | None = None,
         runner: Runner | None = None,
         opener: Callable[..., AbstractContextManager[object]] = urlopen,
+        sleeper: Callable[[float], None] = sleep,
     ) -> None:
         self.config = config
         self.executable = executable or config.warp_cli_path or DEFAULT_WARP_PATH
         self._runner = runner or subprocess.run
         self._opener = opener
+        self._sleep = sleeper
         self.owned = False
+
+    def is_proxy_listening(
+        self, host: str = "127.0.0.1", port: int | None = None, timeout: float = 2.0
+    ) -> bool:
+        """Check if local SOCKS5 proxy is listening on host and port."""
+        target_port = port if port is not None else self.config.warp_proxy_port
+        try:
+            with socket.create_connection((host, target_port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def prepare_proxy(
+        self, port: int | None = None, retry_limit: int = 3, poll_interval: float = 1.0
+    ) -> bool:
+        """Prepare and verify local SOCKS5 WARP proxy."""
+        target_port = port if port is not None else self.config.warp_proxy_port
+
+        try:
+            if self.is_proxy_listening(port=target_port):
+                st = self.status()
+                if st.connected and (st.mode or "").lower() == "proxy":
+                    logger.info("WARP proxy already listening and connected on port %d", target_port)
+                    return True
+        except Exception as exc:
+            logger.debug("Initial WARP proxy check error: %s", exc)
+
+        commands: list[list[str]] = [
+            ["mode", "proxy"],
+            ["proxy", "port", str(target_port)],
+            ["connect"],
+        ]
+        try:
+            for args in commands:
+                res = _run_command(self.executable, args, 30.0, self._runner)
+                if res.returncode != 0:
+                    logger.warning(
+                        "WARP command '%s %s' failed with return code %d: %s",
+                        self.executable,
+                        " ".join(args),
+                        res.returncode,
+                        res.stderr,
+                    )
+                    return False
+        except ConnectivityError as exc:
+            logger.warning("WARP command execution error: %s", exc)
+            return False
+
+        for _ in range(retry_limit):
+            self._sleep(poll_interval)
+            try:
+                st = self.status()
+                if st.connected and self.is_proxy_listening(port=target_port):
+                    self.owned = True
+                    logger.info("WARP proxy successfully connected and listening on port %d", target_port)
+                    return True
+            except Exception as exc:
+                logger.debug("Polling WARP status encountered error: %s", exc)
+
+        logger.warning(
+            "WARP proxy connection timed out after %d attempts on port %d",
+            retry_limit,
+            target_port,
+        )
+        return False
 
     def command_status(self) -> list[str]:
         return [str(self.executable), "status"]

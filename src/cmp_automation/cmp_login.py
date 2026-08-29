@@ -3,6 +3,7 @@
 import logging
 from collections.abc import Awaitable
 from datetime import datetime
+from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
@@ -69,12 +70,18 @@ class CMPLogin:
     ]
     TOKEN_SUBMIT_SELECTORS = [
         "#login input[name='_eventId_submit'][type='submit']",
+        "#login input[name='_eventId_submit']",
         "#login input[type='submit']",
+        "#login button[type='submit']",
+        "#login button",
         'button[type="submit"]',
         'input[type="submit"]',
         'button:has-text("Submit")',
         'button:has-text("Verify")',
-        'button:has-text("Continue")',
+        'button:has-text("Login")',
+        'input[value*="Submit" i]',
+        'input[value*="Verify" i]',
+        'input[value*="Login" i]',
     ]
 
     # Safe structural DOM diagnostic for the auth failure path: reports only
@@ -353,11 +360,25 @@ class CMPLogin:
             try:
                 button = page.locator(selector).first
                 if await button.count() > 0:
-                    await button.click()
+                    try:
+                        await button.click(timeout=3000)
+                    except Exception:
+                        await button.click(force=True, timeout=3000)
                     logger.debug("Clicked token submit button using selector: %s", selector)
                     return
             except Exception:
                 continue
+
+        for selector in self.TOKEN_INPUT_SELECTORS:
+            try:
+                field = page.locator(selector).first
+                if await field.count() > 0:
+                    await field.press("Enter")
+                    logger.debug("Submitted token form from token field via Enter on %s", selector)
+                    return
+            except Exception:
+                continue
+
         raise AuthenticationError("Could not find token submit button")
 
     def _approved_host(self) -> str | None:
@@ -526,6 +547,12 @@ class CMPLogin:
         # Get diagnostic info and raise with it - do not lose the failure context.
         current_url = self._read_page_url(page)
         dom_summary = await self._get_dom_summary(page)
+        try:
+            img_dir = Path("output/images")
+            img_dir.mkdir(parents=True, exist_ok=True)
+            await page.screenshot(path=str(img_dir / "error_auth_failed.png"))
+        except Exception:
+            pass
         raise AuthenticationError(
             "Authentication verification failed - Products page was not reached",
             f"URL: {current_url}, DOM: {dom_summary}",
