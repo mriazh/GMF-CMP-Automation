@@ -195,6 +195,29 @@ class Config(BaseSettings):
         default="CMP - YOUR TOKEN", description="Exact subject of OTP email"
     )
 
+    # Optional WhatsApp lifecycle notifications (GOWA gateway)
+    whatsapp_notifications_enabled: bool = Field(
+        default=False,
+        description="Enable optional WhatsApp run lifecycle notifications (best-effort)",
+    )
+    gowa_base_url: str | None = Field(
+        default=None,
+        description="GOWA gateway base URL; credentials/endpoint stay local",
+        validation_alias=AliasChoices("gowa_base_url", "gowa_url"),
+    )
+    gowa_target_jid: str | None = Field(
+        default=None, description="Recipient WhatsApp JID for lifecycle notifications"
+    )
+    gowa_device_id: str | None = Field(
+        default=None, description="Optional GOWA device id sent as X-Device-Id"
+    )
+    gowa_timeout_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        le=60,
+        description="Hard timeout in seconds for each GOWA notification request",
+    )
+
     @field_validator(
         "firefox_profile_dir",
         "download_dir",
@@ -232,6 +255,28 @@ class Config(BaseSettings):
             raise ValueError("Configured URL must not contain credentials or a port")
         return v
 
+    @field_validator("gowa_base_url", "gowa_target_jid", "gowa_device_id", mode="before")
+    @classmethod
+    def blank_to_none(cls, v: str | None) -> str | None:
+        """Blank environment values are treated as unset configuration."""
+        if v is None:
+            return None
+        stripped = v.strip()
+        return stripped or None
+
+    @field_validator("gowa_base_url")
+    @classmethod
+    def validate_gowa_base_url(cls, v: str | None) -> str | None:
+        """The GOWA endpoint must be a plain HTTP(S) base URL."""
+        if v is None:
+            return None
+        parsed = urlparse(v)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("GOWA base URL must be an absolute http(s) URL")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("GOWA base URL must not contain credentials, query, or fragment")
+        return v.rstrip("/") or v
+
     @field_validator("corp_imap_host")
     @classmethod
     def validate_imap_host(cls, v: str) -> str:
@@ -268,6 +313,18 @@ class Config(BaseSettings):
     def get_timezone(self) -> ZoneInfo:
         """Get timezone as ZoneInfo object."""
         return ZoneInfo(self.timezone)
+
+
+def notifications_configured(config: Config) -> bool:
+    """Report whether WhatsApp notifications can be dispatched.
+
+    True only when notifications are explicitly enabled and both the GOWA base
+    URL and the recipient JID are present. A partial configuration is a silent
+    no-op, never an error.
+    """
+    return bool(
+        config.whatsapp_notifications_enabled and config.gowa_base_url and config.gowa_target_jid
+    )
 
 
 def load_config() -> Config:

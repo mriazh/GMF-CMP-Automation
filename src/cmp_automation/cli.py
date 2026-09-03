@@ -4,15 +4,27 @@ import argparse
 import asyncio
 import logging
 import sys
+import time
 from datetime import date, datetime
 from pathlib import Path
 
 from .config import Config, load_config, validate_paths
 from .exceptions import CMPAutomationError, ConfigurationError
 from .logging import log_run_boundary, setup_logging
+from .notifier import (
+    EVENT_FAILED,
+    EVENT_START,
+    EVENT_SUCCESS,
+    Notifier,
+    build_notifier,
+    safe_error_category,
+)
 from .workflow import run_workflow
 
 logger = logging.getLogger(__name__)
+
+# Only these modes notify; ``generate`` stays unnotified by design.
+NOTIFIED_MODES = frozenset({"full", "scrape"})
 
 
 def parse_date_arg(val: str | None) -> date | None:
@@ -185,9 +197,59 @@ def apply_overrides(config: Config, args: argparse.Namespace) -> None:
         config.image_dir = args.image.expanduser().resolve().parent
 
 
+def target_dates(
+    query_date: date | None, start_date: date | None, end_date: date | None
+) -> list[str]:
+    """Resolve the notification date labels for a run."""
+    if start_date and end_date:
+        return [start_date.isoformat(), end_date.isoformat()]
+    if query_date:
+        return [query_date.isoformat()]
+    return []
+
+
+def notify(
+    notifier: Notifier | None,
+    event: str,
+    *,
+    mode: str,
+    dates: list[str],
+    started_at: float | None = None,
+    output_path: Path | None = None,
+    error: BaseException | None = None,
+) -> None:
+    """Dispatch a lifecycle notification defensively.
+
+    Notifications are best-effort: any failure here is warned about and
+    swallowed so it can never change the pipeline result or exit code.
+    """
+    if notifier is None:
+        return
+    try:
+        elapsed = time.monotonic() - started_at if started_at is not None else None
+        notifier.send_event(
+            event,
+            mode=mode,
+            dates=dates,
+            elapsed_seconds=elapsed,
+            output_path=output_path,
+            error_category=safe_error_category(error) if error is not None else None,
+        )
+    except Exception as exc:
+        # Log the exception type only, matching the adapter's metadata-only
+        # logging so a defensive-guard failure can never surface message text.
+        logger.warning(
+            "Lifecycle notification %s could not be dispatched: %s", event, type(exc).__name__
+        )
+
+
 async def main() -> int:
     """Main entry point."""
     args = parse_args()
+    mode = getattr(args, "mode", "full")
+    notifier: Notifier | None = None
+    started_at: float | None = None
+    notify_dates: list[str] = []
 
     try:
         # Load configuration
@@ -221,6 +283,12 @@ async def main() -> int:
                 print("[!] Pilihan tidak valid.")
                 return 1
 
+        # Build the optional notifier before validation so configuration
+        # errors can still be reported. Unconfigured notifications resolve to
+        # None and stay a silent no-op; ``generate`` never notifies.
+        if getattr(args, "mode", "full") in NOTIFIED_MODES:
+            notifier = build_notifier(config)
+
         # Validate paths
         validate_paths(config)
 
@@ -235,7 +303,13 @@ async def main() -> int:
             )
 
         mode = getattr(args, "mode", "full")
+        notify_dates = target_dates(query_date, start_date, end_date)
         log_run_boundary("RUN START", f"mode={mode} date={query_date or start_date or 'today'}")
+
+        # START is sent only after config/argument validation passed.
+        if notifier is not None:
+            started_at = time.monotonic()
+            notify(notifier, EVENT_START, mode=mode, dates=notify_dates)
 
         # Run workflow
         result_path = await run_workflow(
@@ -257,23 +331,40 @@ async def main() -> int:
 
         logger.info("Success! Output: %s", result_path)
         log_run_boundary("RUN END", f"success output={result_path}")
+        notify(
+            notifier,
+            EVENT_SUCCESS,
+            mode=mode,
+            dates=notify_dates,
+            started_at=started_at,
+            output_path=result_path,
+        )
         return 0
 
     except ConfigurationError as e:
         logger.error("Configuration error: %s", e)
         log_run_boundary("RUN END", f"failed error={e}")
+        notify(notifier, EVENT_FAILED, mode=mode, dates=notify_dates, error=e)
         return 1
     except CMPAutomationError as e:
         logger.error("Automation error: %s", e)
         log_run_boundary("RUN END", f"failed error={e}")
+        notify(
+            notifier, EVENT_FAILED, mode=mode, dates=notify_dates, started_at=started_at, error=e
+        )
         return 1
     except KeyboardInterrupt:
+        # Interrupted runs intentionally send no terminal event; the run was
+        # neither a success nor a normalized failure.
         logger.info("Interrupted by user")
         log_run_boundary("RUN END", "interrupted")
         return 130
-    except Exception:
+    except Exception as e:
         logger.exception("Unexpected error")
         log_run_boundary("RUN END", "unexpected_error")
+        notify(
+            notifier, EVENT_FAILED, mode=mode, dates=notify_dates, started_at=started_at, error=e
+        )
         return 1
 
 

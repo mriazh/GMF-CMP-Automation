@@ -11,6 +11,7 @@ Production-ready Firefox automation for Telkomsel CMP Portal Daily Usage Query r
 - Same-day reruns replace only that day; other populated days remain intact.
 - Dashboard sparks capture navigated through the visible Dashboard menu and anchored at `H15`.
 - Optional, bounded Check Point/WARP readiness boundary; no implicit network mutation.
+- Optional WhatsApp run notifications (START + one terminal SUCCESS/FAILED) via a GOWA gateway; disabled by default and always best-effort.
 
 ## Configuration
 
@@ -76,6 +77,53 @@ output/reports/Daily-Data-Usage-M2M-202609.xlsx
 ```
 
 Dashboard images are saved under the configured image/download directory and embedded in the target day sheet at `H15`.
+
+### Optional WhatsApp Notifications (GOWA)
+
+Run lifecycle notifications can be delivered to a WhatsApp recipient through a
+[GOWA](https://github.com/aldinokemih/gowaha) gateway. They are **disabled by
+default** and only affect `full` and `scrape` runs; `generate` never notifies.
+
+Enable them in the local (gitignored) `.env`:
+
+```dotenv
+WHATSAPP_NOTIFICATIONS_ENABLED=true
+GOWA_BASE_URL=https://gowa-gateway.your-host.invalid
+GOWA_TARGET_JID=0000000000000@s.whatsapp.net
+# Optional: sent as the X-Device-Id header when you run multiple devices
+# GOWA_DEVICE_ID=your-device
+# Short per-request timeout in seconds (default 5)
+GOWA_TIMEOUT_SECONDS=5
+```
+
+`.env.example` carries only placeholder values. The real gateway URL, device id,
+and recipient JID stay local and must never be committed.
+
+**Event flow for `full` / `scrape`:**
+
+| Event | When |
+| --- | --- |
+| `START` | After config/argument validation, before any browser work |
+| `SUCCESS` | Once, after all requested work including workbook generation |
+| `FAILED` | Once, from the normalized configuration/automation error handlers |
+
+A configuration error raised before `START` yields a single `FAILED` event. A
+`KeyboardInterrupt` intentionally sends no terminal event, since an interrupted
+run is neither a success nor a normalized failure.
+
+**What a message contains:** application name, event, pipeline mode, target query
+date or date range, elapsed duration, record count and output workbook path on
+success, and a sanitized failure category (exception class name) on failure.
+
+**What a message never contains:** ICCIDs, OTP values, credentials, report rows or
+raw report data, screenshots, recipient JIDs, or raw exception messages. Delivery
+is a single bounded HTTP `POST {GOWA_BASE_URL}/send/message` with no retry and no
+queue.
+
+**Best-effort guarantee:** notifications are wrapped defensively and can never
+change the pipeline result or its exit code. A missing or partial configuration
+is a silent no-op, and any send failure is logged as a warning without exposing
+the message body, the recipient, or endpoint credentials.
 
 ### Auto-WARP SOCKS5 Proxy
 

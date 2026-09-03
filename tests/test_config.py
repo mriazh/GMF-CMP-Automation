@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cmp_automation.config import Config, load_config, validate_paths
+from cmp_automation.config import Config, load_config, notifications_configured, validate_paths
 from cmp_automation.exceptions import ConfigurationError
 
 
@@ -415,6 +415,126 @@ class TestConfig:
         monkeypatch.setenv("WARP_PROXY_PORT", "65536")
         with pytest.raises(ConfigurationError):
             load_config()
+
+
+class TestNotificationConfig:
+    """Tests for optional WhatsApp/GOWA notification configuration."""
+
+    @staticmethod
+    def _set_base_env(monkeypatch, tmp_path):
+        """Populate the minimum required environment for Config()."""
+        monkeypatch.chdir(tmp_path)
+        profile_dir = tmp_path / "firefox_profile"
+        download_dir = tmp_path / "downloads"
+        profile_dir.mkdir(exist_ok=True)
+        download_dir.mkdir(exist_ok=True)
+        monkeypatch.setenv("CMP_USERNAME", "testuser")
+        monkeypatch.setenv("CMP_PASSWORD", "testpass")
+        monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+        monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+        monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+        monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+
+    def test_notifications_disabled_by_default(self, monkeypatch, tmp_path):
+        """WhatsApp notifications are opt-in and have safe dummy defaults."""
+        self._set_base_env(monkeypatch, tmp_path)
+        for key in (
+            "WHATSAPP_NOTIFICATIONS_ENABLED",
+            "GOWA_BASE_URL",
+            "GOWA_TARGET_JID",
+            "GOWA_DEVICE_ID",
+            "GOWA_TIMEOUT_SECONDS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        config = Config()
+        assert config.whatsapp_notifications_enabled is False
+        assert config.gowa_base_url is None
+        assert config.gowa_target_jid is None
+        assert config.gowa_device_id is None
+        assert config.gowa_timeout_seconds == 5.0
+        assert notifications_configured(config) is False
+
+    def test_notifications_configured_via_environment(self, monkeypatch, tmp_path):
+        """All notification settings load from their documented env vars."""
+        self._set_base_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("WHATSAPP_NOTIFICATIONS_ENABLED", "true")
+        monkeypatch.setenv("GOWA_BASE_URL", "https://gowa.example.invalid")
+        monkeypatch.setenv("GOWA_TARGET_JID", "6280000000000@s.whatsapp.net")
+        monkeypatch.setenv("GOWA_DEVICE_ID", "dummy-device")
+        monkeypatch.setenv("GOWA_TIMEOUT_SECONDS", "7")
+
+        config = Config()
+        assert config.whatsapp_notifications_enabled is True
+        assert config.gowa_base_url == "https://gowa.example.invalid"
+        assert config.gowa_target_jid == "6280000000000@s.whatsapp.net"
+        assert config.gowa_device_id == "dummy-device"
+        assert config.gowa_timeout_seconds == 7.0
+        assert notifications_configured(config) is True
+
+    def test_notifications_configured_requires_full_configuration(self, monkeypatch, tmp_path):
+        """Enabled but incomplete configuration never reports as configured."""
+        self._set_base_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("WHATSAPP_NOTIFICATIONS_ENABLED", "true")
+        monkeypatch.delenv("GOWA_BASE_URL", raising=False)
+        monkeypatch.setenv("GOWA_TARGET_JID", "6280000000000@s.whatsapp.net")
+
+        config = Config()
+        assert notifications_configured(config) is False
+
+    def test_notifications_configured_requires_enabled_flag(self, monkeypatch, tmp_path):
+        """Fully populated values stay inert while the flag is off."""
+        self._set_base_env(monkeypatch, tmp_path)
+        monkeypatch.delenv("WHATSAPP_NOTIFICATIONS_ENABLED", raising=False)
+        monkeypatch.setenv("GOWA_BASE_URL", "https://gowa.example.invalid")
+        monkeypatch.setenv("GOWA_TARGET_JID", "6280000000000@s.whatsapp.net")
+
+        config = Config()
+        assert notifications_configured(config) is False
+
+    def test_gowa_timeout_bounds(self, monkeypatch, tmp_path):
+        """The GOWA request timeout is required to stay short and positive."""
+        self._set_base_env(monkeypatch, tmp_path)
+
+        monkeypatch.setenv("GOWA_TIMEOUT_SECONDS", "0")
+        with pytest.raises(ConfigurationError):
+            load_config()
+
+        monkeypatch.setenv("GOWA_TIMEOUT_SECONDS", "-3")
+        with pytest.raises(ConfigurationError):
+            load_config()
+
+        monkeypatch.setenv("GOWA_TIMEOUT_SECONDS", "600")
+        with pytest.raises(ConfigurationError):
+            load_config()
+
+    def test_gowa_base_url_trailing_slash_normalized(self, monkeypatch, tmp_path):
+        """A trailing slash is removed so endpoint joining stays predictable."""
+        self._set_base_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("GOWA_BASE_URL", "https://gowa.example.invalid/")
+
+        config = Config()
+        assert config.gowa_base_url == "https://gowa.example.invalid"
+
+    def test_gowa_base_url_requires_http_scheme(self, monkeypatch, tmp_path):
+        """A non-HTTP scheme is rejected instead of failing at send time."""
+        self._set_base_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("GOWA_BASE_URL", "ftp://gowa.example.invalid")
+
+        with pytest.raises(ConfigurationError):
+            load_config()
+
+    def test_blank_gowa_values_are_treated_as_missing(self, monkeypatch, tmp_path):
+        """Blank strings normalize to None rather than empty endpoints."""
+        self._set_base_env(monkeypatch, tmp_path)
+        monkeypatch.setenv("WHATSAPP_NOTIFICATIONS_ENABLED", "true")
+        monkeypatch.setenv("GOWA_BASE_URL", "   ")
+        monkeypatch.setenv("GOWA_TARGET_JID", "  ")
+
+        config = Config()
+        assert config.gowa_base_url is None
+        assert config.gowa_target_jid is None
+        assert notifications_configured(config) is False
 
 
 class TestValidatePaths:
