@@ -117,7 +117,7 @@ failure category (exception class name) on failure. Messages are deliberately
 concise; no file path is ever included, for example:
 
 ```text
-[GMF CMP Automation] SUCCESS | mode=full | date=2026-09-16 | elapsed=95s | records=34
+[GMF CMP Automation] SUCCESS | mode=full | date=2026-09-16 | elapsed=1m 35s | records=34
 ```
 
 **What a message never contains:** output file paths, ICCIDs, OTP values,

@@ -190,8 +190,19 @@ def safe_error_category(error: BaseException) -> str:
 
 
 def _format_elapsed(elapsed_seconds: float) -> str:
-    """Render an elapsed duration in whole seconds."""
-    return f"{int(elapsed_seconds)}s"
+    """Render an elapsed duration in human-readable MRTG format."""
+    total_s = max(0, int(elapsed_seconds))
+    if total_s < 60:
+        return f"{total_s}s"
+    if total_s < 3600:
+        m = total_s // 60
+        s = total_s % 60
+        return f"{m}m {s}s"
+    h = total_s // 3600
+    rem = total_s % 3600
+    m = rem // 60
+    s = rem % 60
+    return f"{h}h {m}m {s}s"
 
 
 def format_event_message(

@@ -215,6 +215,7 @@ def notify(
     mode: str,
     dates: list[str],
     started_at: float | None = None,
+    record_count: int | None = None,
     error: BaseException | None = None,
 ) -> None:
     """Dispatch a lifecycle notification defensively.
@@ -233,6 +234,7 @@ def notify(
             mode=mode,
             dates=dates,
             elapsed_seconds=elapsed,
+            record_count=record_count,
             error_category=safe_error_category(error) if error is not None else None,
         )
     except Exception as exc:
@@ -332,12 +334,32 @@ async def main() -> int:
         logger.info("Success! Output: %s", result_path)
         log_run_boundary("RUN END", f"success output={result_path}")
         # The output path stays in the local logs only; notifications omit it.
+        rec_count: int | None = None
+        if result_path and result_path.exists():
+            try:
+                import openpyxl
+                wb = openpyxl.load_workbook(result_path, read_only=True)
+                # If monthly workbook with day sheets
+                target_sheet = f"{(query_date or date.today()).day:02d}" if (query_date or date.today()) else None
+                ws = wb[target_sheet] if target_sheet and target_sheet in wb.sheetnames else wb.active
+                if ws is not None:
+                    count = 0
+                    for row in range(5, 55):
+                        if ws.cell(row=row, column=4).value is not None:
+                            count += 1
+                        else:
+                            break
+                    rec_count = count if count > 0 else (ws.max_row - 1 if ws.max_row and ws.max_row > 1 else None)
+                wb.close()
+            except Exception:
+                rec_count = None
         notify(
             notifier,
             EVENT_SUCCESS,
             mode=mode,
             dates=notify_dates,
             started_at=started_at,
+            record_count=rec_count,
         )
         return 0
 

@@ -24,6 +24,7 @@ from cmp_automation.notifier import (
     MAX_MESSAGE_LENGTH,
     Notifier,
     NotifierConfig,
+    _format_elapsed,
     build_notifier,
     format_event_message,
     http_post_json,
@@ -370,7 +371,7 @@ class TestMessageRedaction:
             record_count=34,
         )
         assert "SUCCESS" in message
-        assert "elapsed=95s" in message
+        assert "elapsed=1m 35s" in message
         assert "records=34" in message
         assert "34" in message  # record count survives: it is allow-listed
         assert "output=" not in message
@@ -378,7 +379,7 @@ class TestMessageRedaction:
         assert "Daily-Data-Usage-M2M" not in message
         # Concise: one allow-listed fragment per pipeline fact, nothing else.
         assert message == (
-            f"[{APP_NAME}] SUCCESS | mode=full | date=2026-09-16 | elapsed=95s | records=34"
+            f"[{APP_NAME}] SUCCESS | mode=full | date=2026-09-16 | elapsed=1m 35s | records=34"
         )
 
     def test_failure_message_carries_only_a_safe_category(self) -> None:
@@ -555,6 +556,56 @@ class TestSanitizeHelpers:
             error_category=safe_error_category(type("E" * 5000, (Exception,), {})("x")),
         )
         assert len(message) <= MAX_MESSAGE_LENGTH
+
+
+class TestFormatElapsed:
+    """Tests for _format_elapsed function covering MRTG-TelkomCare format requirements."""
+
+    def test_format_seconds_only(self) -> None:
+        """Test format for durations < 60s: Xs (e.g., 45s, 0s)."""
+        assert _format_elapsed(0.0) == "0s"
+        assert _format_elapsed(45.0) == "45s"
+        assert _format_elapsed(59.9) == "59s"
+
+    def test_format_minutes_and_seconds(self) -> None:
+        """Test format for durations < 3600s: Xm Ys (e.g., 4m 17s, 10m 23s)."""
+        assert _format_elapsed(60.0) == "1m 0s"
+        assert _format_elapsed(77.0) == "1m 17s"
+        assert _format_elapsed(3599.9) == "59m 59s"
+        assert _format_elapsed(480.0) == "8m 0s"  # 8 minutes
+        assert _format_elapsed(583.0) == "9m 43s"  # 9 minutes 43 seconds
+
+    def test_format_hours_minutes_seconds(self) -> None:
+        """Test format for durations >= 3600s: Xh Ym Zs (e.g., 1h 2m 3s)."""
+        assert _format_elapsed(3600.0) == "1h 0m 0s"
+        assert _format_elapsed(3723.0) == "1h 2m 3s"
+        assert _format_elapsed(7200.0) == "2h 0m 0s"
+        assert _format_elapsed(3661.0) == "1h 1m 1s"
+        assert _format_elapsed(4800.0) == "1h 20m 0s"
+
+    def test_format_elapsed_used_in_success_message(self) -> None:
+        """Integration test: verify elapsed formatting appears correctly in SUCCESS messages."""
+        message = format_event_message(
+            EVENT_SUCCESS,
+            mode="full",
+            dates=["2026-09-16"],
+            elapsed_seconds=95.4,
+            record_count=34,
+        )
+        # 95.4 seconds should format as "1m 35s"
+        assert "elapsed=1m 35s" in message
+        assert "records=34" in message
+
+        message = format_event_message(
+            EVENT_SUCCESS,
+            mode="full",
+            dates=["2026-09-16"],
+            elapsed_seconds=3723.0,
+            record_count=42,
+        )
+        # 3723 seconds should format as "1h 2m 3s"
+        assert "elapsed=1h 2m 3s" in message
+        assert "records=42" in message
 
 
 class TestLoggingIsMetadataOnly:
