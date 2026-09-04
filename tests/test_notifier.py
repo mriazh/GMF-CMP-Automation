@@ -3,6 +3,7 @@
 Every test mocks the HTTP transport seam; no test may perform a real network call.
 """
 
+import inspect
 import json
 import logging
 import urllib.error
@@ -336,12 +337,12 @@ class TestTransportFailuresAreNonFatal:
                 mode="full",
                 dates=["2026-09-16"],
                 record_count=34,
-                output_path=Path("output/reports/Daily-Data-Usage-M2M-202609.xlsx"),
             )
 
         assert DUMMY_JID not in caplog.text
         assert "Daily-Data-Usage-M2M" not in caplog.text
         assert "records=34" not in caplog.text
+        assert "output=" not in caplog.text
 
 
 class TestMessageRedaction:
@@ -359,21 +360,26 @@ class TestMessageRedaction:
         message = format_event_message(EVENT_START, mode="full", dates=["2026-09-07", "2026-09-08"])
         assert "dates=2026-09-07..2026-09-08" in message
 
-    def test_success_message_includes_elapsed_records_and_output(self) -> None:
-        """SUCCESS messages carry elapsed time, record count, and output path."""
+    def test_success_message_includes_elapsed_and_records_only(self) -> None:
+        """SUCCESS messages carry elapsed time and record count, never a path."""
         message = format_event_message(
             EVENT_SUCCESS,
             mode="full",
             dates=["2026-09-16"],
             elapsed_seconds=95.4,
             record_count=34,
-            output_path=Path("output/reports/Daily-Data-Usage-M2M-202609.xlsx"),
         )
         assert "SUCCESS" in message
         assert "elapsed=95s" in message
         assert "records=34" in message
-        assert "output=output/reports/Daily-Data-Usage-M2M-202609.xlsx" in message
         assert "34" in message  # record count survives: it is allow-listed
+        assert "output=" not in message
+        assert ".xlsx" not in message
+        assert "Daily-Data-Usage-M2M" not in message
+        # Concise: one allow-listed fragment per pipeline fact, nothing else.
+        assert message == (
+            f"[{APP_NAME}] SUCCESS | mode=full | date=2026-09-16 | elapsed=95s | records=34"
+        )
 
     def test_failure_message_carries_only_a_safe_category(self) -> None:
         """FAILED messages never include raw exception text."""
@@ -412,7 +418,6 @@ class TestMessageRedaction:
             EVENT_FAILED,
             mode="full",
             dates=["2026-09-16"],
-            output_path=Path("x" * 5000),
             error_category="E" * 5000,
         )
         assert len(message) <= MAX_MESSAGE_LENGTH
@@ -461,31 +466,56 @@ class TestSanitizeHelpers:
         assert sanitize_message_text(rendered, preserve_month_stamp=True) == rendered
 
     @pytest.mark.parametrize(
-        ("path", "expected_stamp"),
+        "path",
         [
-            ("out/8991122334455667788.xlsx", None),
-            ("out/482913.xlsx", None),
-            ("out/6281234567890/report.xlsx", None),
-            ("out/report-20260915.xlsx", None),
-            ("output/Daily-Data-Usage-M2M-202609.xlsx", "202609"),
-            ("out/8991122334455667788-Daily-Data-Usage-M2M-202609.xlsx", "202609"),
+            "out/8991122334455667788.xlsx",
+            "out/482913.xlsx",
+            "out/6281234567890/report.xlsx",
+            "out/report-20260915.xlsx",
+            "output/Daily-Data-Usage-M2M-202609.xlsx",
+            "out/8991122334455667788-Daily-Data-Usage-M2M-202609.xlsx",
         ],
     )
-    def test_output_path_redacts_every_digit_run_except_month_stamp(
-        self, path: str, expected_stamp: str | None
-    ) -> None:
-        """A path may keep its month stamp but never an ICCID, OTP or phone number.
+    def test_success_message_never_carries_an_output_path(self, path: str) -> None:
+        """No output path, and nothing path-shaped, can reach a SUCCESS message.
 
-        Regression test: digit redaction must stay on for the whole output path.
-        Disabling it for the path wholesale leaked ICCIDs into messages.
+        Regression test: output paths were once appended as ``output=...``, which
+        could smuggle an ICCID, OTP or phone number into a notification even when
+        digit redaction was misconfigured. ``format_event_message`` no longer
+        accepts an output path at all, so every variant renders identically.
         """
-        message = format_event_message(EVENT_SUCCESS, output_path=path)
+        message = format_event_message(
+            EVENT_SUCCESS,
+            mode="full",
+            dates=["2026-09-16"],
+            elapsed_seconds=95.4,
+            record_count=34,
+        )
+        assert "output=" not in message
+        assert ".xlsx" not in message
+        assert "/" not in message
+        assert path not in message
+        assert "202609" not in message
         for secret in ("8991122334455667788", "482913", "6281234567890", "20260915"):
             assert secret not in message
-        if expected_stamp is None:
-            assert "[redacted]" in message
-        else:
-            assert expected_stamp in message
+
+    def test_send_event_signature_has_no_output_path(self) -> None:
+        """The notifier API no longer offers an output path, and sends a clean body."""
+        assert "output_path" not in inspect.signature(Notifier.send_event).parameters
+        assert "output_path" not in inspect.signature(format_event_message).parameters
+
+        transport = RecordingTransport()
+        client = Notifier(make_notifier_config(), transport=transport)
+        client.send_event(
+            EVENT_SUCCESS,
+            mode="full",
+            dates=["2026-09-16"],
+            record_count=34,
+        )
+
+        delivered = str(transport.calls[0].payload["message"])
+        assert "output=" not in delivered
+        assert delivered.endswith("records=34")
 
     def test_sanitize_still_redacts_secrets_in_filenames(self) -> None:
         """Preserving a month stamp does not also skip credential redaction."""

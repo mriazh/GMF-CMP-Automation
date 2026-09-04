@@ -112,13 +112,18 @@ A configuration error raised before `START` yields a single `FAILED` event. A
 run is neither a success nor a normalized failure.
 
 **What a message contains:** application name, event, pipeline mode, target query
-date or date range, elapsed duration, record count and output workbook path on
-success, and a sanitized failure category (exception class name) on failure.
+date or date range, elapsed duration and record count on success, and a sanitized
+failure category (exception class name) on failure. Messages are deliberately
+concise; no file path is ever included, for example:
 
-**What a message never contains:** ICCIDs, OTP values, credentials, report rows or
-raw report data, screenshots, recipient JIDs, or raw exception messages. Delivery
-is a single bounded HTTP `POST {GOWA_BASE_URL}/send/message` with no retry and no
-queue.
+```text
+[GMF CMP Automation] SUCCESS | mode=full | date=2026-09-16 | elapsed=95s | records=34
+```
+
+**What a message never contains:** output file paths, ICCIDs, OTP values,
+credentials, report rows or raw report data, screenshots, recipient JIDs, or raw
+exception messages. Delivery is a single bounded HTTP
+`POST {GOWA_BASE_URL}/send/message` with no retry and no queue.
 
 **Best-effort guarantee:** notifications are wrapped defensively and can never
 change the pipeline result or its exit code. A missing or partial configuration

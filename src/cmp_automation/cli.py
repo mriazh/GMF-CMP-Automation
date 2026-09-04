@@ -215,13 +215,14 @@ def notify(
     mode: str,
     dates: list[str],
     started_at: float | None = None,
-    output_path: Path | None = None,
     error: BaseException | None = None,
 ) -> None:
     """Dispatch a lifecycle notification defensively.
 
     Notifications are best-effort: any failure here is warned about and
-    swallowed so it can never change the pipeline result or exit code.
+    swallowed so it can never change the pipeline result or exit code. Only
+    short, allow-listed fields are sent; the output file path is intentionally
+    excluded so messages stay concise.
     """
     if notifier is None:
         return
@@ -232,7 +233,6 @@ def notify(
             mode=mode,
             dates=dates,
             elapsed_seconds=elapsed,
-            output_path=output_path,
             error_category=safe_error_category(error) if error is not None else None,
         )
     except Exception as exc:
@@ -331,13 +331,13 @@ async def main() -> int:
 
         logger.info("Success! Output: %s", result_path)
         log_run_boundary("RUN END", f"success output={result_path}")
+        # The output path stays in the local logs only; notifications omit it.
         notify(
             notifier,
             EVENT_SUCCESS,
             mode=mode,
             dates=notify_dates,
             started_at=started_at,
-            output_path=result_path,
         )
         return 0
 

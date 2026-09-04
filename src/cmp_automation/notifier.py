@@ -10,8 +10,10 @@ The adapter is deliberately small and isolated:
   pipeline result.
 
 Logging is metadata-only (event name, outcome, HTTP status, redacted endpoint).
-Message bodies, recipient JIDs, credentials, ICCIDs, OTPs, and raw exception
-detail are never logged and never delivered.
+Message bodies, file paths, recipient JIDs, credentials, ICCIDs, OTPs, and raw
+exception detail are never logged and never delivered. Messages are built from a
+short allow-listed set of pipeline facts only, so a notification body is always
+short and can never leak path-shaped data.
 """
 
 import json
@@ -21,7 +23,6 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -58,10 +59,11 @@ _SECRET_ASSIGNMENT_RE = re.compile(
 _BEARER_TOKEN_RE = re.compile(r"(?i)\bbearer\s+\S+")
 # ICCIDs (18-20 digits), OTPs (6 digits), and other long digit runs.
 _LONG_DIGIT_RUN_RE = re.compile(r"\d{6,}")
-# The generated workbook filename legitimately embeds a six-digit month stamp
+# A generated workbook filename legitimately embeds a six-digit month stamp
 # (``Daily-Data-Usage-M2M-202609.xlsx``, see ``excel_report.generate_report``).
-# Only that exact ``-YYYYMM.`` shape is ever preserved; every other digit run in
-# the path is still redacted, so an ICCID or OTP can never ride along in a name.
+# Only that exact ``-YYYYMM.`` shape is ever preserved, and only when a caller
+# opts in via ``preserve_month_stamp``; every other digit run in the text is
+# still redacted, so an ICCID or OTP can never ride along in a name.
 _MONTH_STAMP_RE = re.compile(r"(?<=-)\d{6}(?=\.)")
 
 
@@ -159,9 +161,11 @@ def sanitize_message_text(
     Whitespace is collapsed and the result is truncated to ``max_length``.
 
     ``preserve_month_stamp`` keeps an allow-listed ``-YYYYMM.`` month stamp
-    intact while redacting every *other* digit run. It exists for the generated
-    workbook filename, whose month stamp is needed to identify the workbook.
-    It never disables redaction for the surrounding text.
+    intact while redacting every *other* digit run. It is opt-in for callers
+    that must display a generated workbook filename, whose month stamp
+    identifies the workbook. Notification bodies never need it, because file
+    paths are deliberately excluded from messages. It never disables redaction
+    for the surrounding text.
 
     ``redact_digit_runs=False`` remains available for callers that have already
     redacted their fragment and only want credential redaction plus bounding.
@@ -197,14 +201,14 @@ def format_event_message(
     dates: Sequence[str] | None = None,
     elapsed_seconds: float | None = None,
     record_count: int | None = None,
-    output_path: Path | str | None = None,
     error_category: str | None = None,
 ) -> str:
     """Compose a bounded, redacted notification body from allow-listed fields.
 
     Only the application name, event, mode, target date(s), elapsed duration,
-    record count, output path, and a sanitized failure category are ever
-    included. Everything else is dropped.
+    record count, and a sanitized failure category are ever included. File
+    paths are deliberately excluded so every message stays short and readable.
+    Everything else is dropped.
     """
     if event not in _ALLOWED_EVENTS:
         raise ValueError(f"Unsupported notification event: {event}")
@@ -225,22 +229,13 @@ def format_event_message(
         parts.append(f"elapsed={_format_elapsed(elapsed_seconds)}")
     if record_count is not None:
         parts.append(f"records={int(record_count)}")
-    if output_path is not None:
-        # POSIX separators keep the message stable across platforms. The
-        # generated workbook filename legitimately contains a ``-YYYYMM.`` month
-        # stamp, so only that stamp is preserved; every other digit run in the
-        # path is still redacted before the path reaches the message.
-        rendered = output_path.as_posix() if isinstance(output_path, Path) else str(output_path)
-        safe_path = sanitize_message_text(rendered, max_length=200, preserve_month_stamp=True)
-        parts.append(f"output={safe_path}")
     if error_category:
         parts.append(f"error={sanitize_message_text(error_category, max_length=60)}")
 
     # Every fragment above is individually redacted. The final assembly pass
-    # re-applies credential redaction, re-checks digit runs (preserving only
-    # allow-listed month stamps) as a defence-in-depth backstop, and bounds the
-    # final length.
-    return sanitize_message_text(" | ".join(parts), preserve_month_stamp=True)
+    # re-applies credential redaction and digit-run redaction as a
+    # defence-in-depth backstop, and bounds the final length.
+    return sanitize_message_text(" | ".join(parts))
 
 
 def http_post_json(url: str, body: bytes, headers: Mapping[str, str], timeout: float) -> int:
@@ -270,7 +265,6 @@ class Notifier:
         dates: Sequence[str] | None = None,
         elapsed_seconds: float | None = None,
         record_count: int | None = None,
-        output_path: Path | str | None = None,
         error_category: str | None = None,
     ) -> bool:
         """Send one notification. Returns whether delivery was accepted.
@@ -284,7 +278,6 @@ class Notifier:
             dates=dates,
             elapsed_seconds=elapsed_seconds,
             record_count=record_count,
-            output_path=output_path,
             error_category=error_category,
         )
         return self.send_message(message, event=event)

@@ -641,17 +641,24 @@ class TestLifecycleNotifications:
         assert "START" in transport.messages[0]
 
     @pytest.mark.asyncio
-    async def test_success_message_includes_output_and_not_secrets(self, tmp_path: Path) -> None:
-        """The SUCCESS body carries the output path and nothing sensitive."""
+    async def test_success_message_omits_output_path_and_secrets(self, tmp_path: Path) -> None:
+        """The SUCCESS body is concise and clean: no output path, no secrets."""
         config = build_notified_config(tmp_path, cmp_password="super-secret-pw")
         _, transport = await self.run_main(
             config, build_args(mode="full"), workflow_result=Path("output/reports/wb.xlsx")
         )
 
         success_message = transport.messages[1]
-        assert "output=output/reports/wb.xlsx" in success_message
+        assert "SUCCESS" in success_message
+        assert "output=" not in success_message
+        assert "wb.xlsx" not in success_message
+        assert "output/reports" not in success_message
+        assert "/tmp" not in success_message
         assert "super-secret-pw" not in success_message
         assert DUMMY_GOWA_JID not in success_message
+        # Concise: one allow-listed fragment per pipeline fact, nothing else.
+        assert success_message.startswith("[GMF CMP Automation] SUCCESS | mode=full | date=")
+        assert success_message.count(" | ") <= 3
 
     @pytest.mark.asyncio
     async def test_start_message_includes_mode_and_date(self, tmp_path: Path) -> None:
