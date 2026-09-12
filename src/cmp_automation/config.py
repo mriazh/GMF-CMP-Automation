@@ -368,18 +368,8 @@ def validate_paths(config: Config) -> None:
             if not artifact_dir.is_dir():
                 raise ConfigurationError(f"Artifact path is not a directory: {artifact_dir}")
 
-    if not config.excel_template_path.exists():
-        example_fallback = config.excel_template_path.with_name(
-            config.excel_template_path.stem + ".example" + config.excel_template_path.suffix
-        )
-        if example_fallback.exists() and example_fallback.is_file():
-            config.excel_template_path = example_fallback
-        else:
-            raise ConfigurationError(
-                f"Excel template file does not exist: {config.excel_template_path}"
-            )
-    if not config.excel_template_path.is_file():
-        raise ConfigurationError(f"Excel template path is not a file: {config.excel_template_path}")
+    if not config.excel_template_path.exists() or not config.excel_template_path.is_file():
+        raise ConfigurationError(f"Excel template file does not exist: {config.excel_template_path}")
 
     config.excel_output_dir.mkdir(parents=True, exist_ok=True)
     if not config.excel_output_dir.is_dir():

@@ -582,8 +582,9 @@ class TestValidatePaths:
             with pytest.raises(ConfigurationError, match="template.*does not exist"):
                 validate_paths(config)
 
-    def test_template_falls_back_to_example_file(self, monkeypatch):
-        """Test that validate_paths automatically falls back to .example.xlsx when main template is absent."""
+    def test_missing_template_fails_closed_even_with_example(self, monkeypatch):
+        """Test that validate_paths raises ConfigurationError when the real template is missing,
+        even if a .example.xlsx fallback file exists. Production runs must fail-closed."""
         with tempfile.TemporaryDirectory() as tmpdir:
             profile_dir = Path(tmpdir) / "firefox_profile"
             download_dir = Path(tmpdir) / "downloads"
@@ -602,8 +603,9 @@ class TestValidatePaths:
             monkeypatch.setenv("EXCEL_TEMPLATE_PATH", str(Path(tmpdir) / "template.xlsx"))
 
             config = Config()
-            validate_paths(config)
-            assert config.excel_template_path == example_file
+            with pytest.raises(ConfigurationError, match="template.*does not exist"):
+                validate_paths(config)
+            assert config.excel_template_path.name == "template.xlsx"
 
     def test_missing_profile_dir_raises(self, monkeypatch):
         """Test that missing profile directory raises error."""

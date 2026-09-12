@@ -75,6 +75,25 @@ class TestApplyOverrides:
         assert base_config.excel_output_dir == (tmp_path / "new_out").resolve()
         assert base_config.excel_template_path == (tmp_path / "new_tmpl.xlsx").resolve()
 
+    def test_image_dir_override_sets_config_image_dir(self, base_config: Config, tmp_path: Path) -> None:
+        """--image-dir maps strictly to config.image_dir, never download_dir."""
+        original_download_dir = base_config.download_dir
+        args = argparse.Namespace(
+            timeout=None,
+            download_dir=None,
+            profile_dir=None,
+            excel_output_dir=None,
+            report_dir=None,
+            xlsx_dir=None,
+            image_dir=tmp_path / "new_images",
+            excel_template=None,
+            raw_xlsx=None,
+            image=None,
+        )
+        apply_overrides(base_config, args)
+        assert base_config.image_dir == (tmp_path / "new_images").resolve()
+        assert base_config.download_dir == original_download_dir
+
     def test_invalid_timeout_too_low(self, base_config: Config) -> None:
         """Timeout below 10 raises ConfigurationError."""
         args = argparse.Namespace(

@@ -186,7 +186,7 @@ def apply_overrides(config: Config, args: argparse.Namespace) -> None:
     if getattr(args, "xlsx_dir", None):
         config.download_dir = args.xlsx_dir.expanduser().resolve()
     if getattr(args, "image_dir", None):
-        config.download_dir = args.image_dir.expanduser().resolve()
+        config.image_dir = args.image_dir.expanduser().resolve()
     if getattr(args, "report_dir", None):
         config.excel_output_dir = args.report_dir.expanduser().resolve()
     if getattr(args, "excel_template", None):

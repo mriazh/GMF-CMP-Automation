@@ -215,6 +215,33 @@ class TestExcelReportGenerator:
         with pytest.raises(ExcelReportError, match="not found"):
             generator.prepare_template_copy(Path("/nonexistent/tpl.xlsx"), tmp_path / "out.xlsx")
 
+    def test_atomic_save_uses_temp_and_replace(
+        self, generator: ExcelReportGenerator, config: Config, tmp_path: Path
+    ) -> None:
+        """Atomic save writes to a temp file first, then replaces the target via os.replace."""
+        import cmp_automation.excel_report as er
+
+        out_path = tmp_path / "out.xlsx"
+        original_replace = er.os.replace
+        calls: list[tuple[Path, Path]] = []
+
+        def spy_replace(src: Path, dst: Path) -> None:
+            calls.append((src, dst))
+            original_replace(src, dst)
+
+        er.os.replace = spy_replace
+        try:
+            generator.prepare_template_copy(config.excel_template_path, out_path)
+        finally:
+            er.os.replace = original_replace
+
+        assert len(calls) == 1
+        src, dst = calls[0]
+        assert dst == out_path
+        assert src.parent == out_path.parent
+        assert not src.exists()  # temp file consumed by os.replace
+        assert out_path.exists()
+
     def test_missing_screenshot_raises(
         self, generator: ExcelReportGenerator, config: Config, tmp_path: Path
     ) -> None:

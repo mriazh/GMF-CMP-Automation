@@ -1,6 +1,7 @@
 """Browser management for CMP Automation."""
 
 import logging
+import os
 import subprocess
 import sys
 from collections.abc import AsyncGenerator
@@ -15,21 +16,73 @@ from .exceptions import BrowserError
 logger = logging.getLogger(__name__)
 
 
-def _clear_stale_firefox_lock(profile_dir: Path) -> None:
-    """Remove stale parent.lock from persistent profile if no Firefox process is running."""
-    lock_file = profile_dir / "parent.lock"
-    if not lock_file.exists():
-        return
-    try:
-        if sys.platform == "win32":
+def _firefox_process_running() -> bool | None:
+    """Return True when a Firefox process runs, False when confirmed none, None when undetermined."""
+    if sys.platform == "win32":
+        try:
             res = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq firefox.exe"],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            if "firefox.exe" in res.stdout.lower():
-                return
+            if res.returncode == 0 and "firefox.exe" in res.stdout.lower():
+                return True
+            return False
+        except (OSError, subprocess.SubprocessError):
+            return None
+    if sys.platform == "darwin":
+        try:
+            res = subprocess.run(
+                ["pgrep", "-x", "firefox"], capture_output=True, check=False
+            )
+            return res.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            res = subprocess.run(
+                ["pgrep", "-f", "firefox"], capture_output=True, check=False
+            )
+            if res.returncode == 0:
+                return True
+            return False
+    # POSIX: check running firefox via pgrep, then /proc as fallback.
+    try:
+        res = subprocess.run(["pgrep", "-f", "firefox"], capture_output=True, check=False)
+        if res.returncode == 0:
+            return True
+        return False
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            comm_path = Path("/proc") / entry / "comm"
+            try:
+                comm = comm_path.read_text().strip()
+            except OSError:
+                continue
+            if comm.startswith("firefox"):
+                return True
+        return False
+    except OSError:
+        return None
+
+
+def _clear_stale_firefox_lock(profile_dir: Path) -> None:
+    """Remove stale parent.lock from persistent profile if no Firefox process is running."""
+    lock_file = profile_dir / "parent.lock"
+    if not lock_file.exists():
+        return
+    running = _firefox_process_running()
+    if running is None:
+        logger.warning(
+            "Cannot determine Firefox process state; leaving lock %s in place", lock_file
+        )
+        return
+    if running:
+        logger.info("Firefox is running; leaving lock %s in place", lock_file)
+        return
+    try:
         lock_file.unlink(missing_ok=True)
         logger.info("Cleared stale Firefox parent.lock from %s", profile_dir)
     except Exception as exc:

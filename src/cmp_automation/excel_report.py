@@ -1,6 +1,7 @@
 """Excel report generation with embedded dashboard screenshot for CMP Daily Usage."""
 
 import logging
+import os
 import zipfile
 from copy import copy
 from datetime import date, datetime
@@ -40,6 +41,20 @@ class ExcelReportGenerator:
 
     def __init__(self, config: Config) -> None:
         self.config = config
+
+    @staticmethod
+    def _atomic_save_workbook(wb: openpyxl.Workbook, output_path: Path) -> None:
+        """Save a workbook to a temp file, flush to disk, and atomically replace the target."""
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
+        try:
+            wb.save(tmp_path)
+            with open(tmp_path, "r+b") as handle:
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, output_path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
 
     def _prune_non_standard_sheets(self, wb: openpyxl.Workbook) -> list[str]:
         """Detect and prune/remove any sheet whose name is NOT in VALID_SHEET_NAMES."""
@@ -112,9 +127,8 @@ class ExcelReportGenerator:
                 if hasattr(ws, "_images"):
                     ws._images.clear()
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            wb.save(output_path)
+            self._atomic_save_workbook(wb, output_path)
         except Exception as e:
             raise ExcelReportError(f"Failed to save prepared template copy to {output_path}") from e
 
@@ -218,7 +232,7 @@ class ExcelReportGenerator:
             self._embed_screenshot(ws, screenshot_path)
 
         try:
-            wb.save(output_path)
+            self._atomic_save_workbook(wb, output_path)
         except Exception as e:
             raise ExcelReportError(f"Failed to save updated workbook to {output_path}") from e
 
