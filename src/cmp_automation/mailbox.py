@@ -161,8 +161,10 @@ class MailboxClient:
             self._base_uid = max_uid
             logger.debug("IMAP UID snapshot at connect: %s", self._base_uid)
         except Exception as exc:
-            logger.warning("Failed to take UID snapshot: %s", exc)
-            self._base_uid = 0
+            # Fail closed: a missing UID baseline must never default to 0,
+            # otherwise stale OTP emails from previous runs become eligible.
+            logger.warning("Failed to take UID snapshot: %s", type(exc).__name__)
+            raise OTPError("Failed to initialize IMAP UID snapshot baseline") from exc
 
     async def disconnect(self) -> None:
         """Close and log out of the IMAP connection (async wrapper)."""
@@ -377,7 +379,7 @@ class MailboxClient:
                 body=body,
             )
         except Exception as exc:
-            logger.warning("Failed to parse IMAP message UID %s: %s", uid, exc)
+            logger.warning("Failed to parse IMAP message UID %s: %s", uid, type(exc).__name__)
             return None
 
     def _extract_internal_date(self, fetch_data: list[Any]) -> datetime | None:

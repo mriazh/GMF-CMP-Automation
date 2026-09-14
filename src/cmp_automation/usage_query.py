@@ -98,7 +98,7 @@ class UsageQueryExporter:
         await self._close_export_dialog(page)
 
         # 10. Parse and validate downloaded data
-        rows = self._parse_usage_data(raw_path)
+        rows = self.parse_usage_data(raw_path)
 
         logger.info(
             "Usage Query export completed successfully: %s (%d rows)",
@@ -605,8 +605,11 @@ class UsageQueryExporter:
         except PlaywrightTimeoutError as e:
             raise ExportDialogCloseError("Export dialog did not close within timeout") from e
 
-    def _parse_usage_data(self, xlsx_path: Path) -> list[dict[str, Any]]:
-        """Parse rows from raw Usage Query XLSX export and validate schema."""
+    def parse_usage_data(self, xlsx_path: Path) -> list[dict[str, Any]]:
+        """Parse rows from raw Usage Query XLSX export and validate schema.
+
+        Public API; prefer calling this over the private legacy alias.
+        """
         try:
             wb = openpyxl.load_workbook(xlsx_path, data_only=True)
         except Exception as e:
@@ -665,3 +668,7 @@ class UsageQueryExporter:
 
         wb.close()
         return rows
+
+    def _parse_usage_data(self, xlsx_path: Path) -> list[dict[str, Any]]:
+        """Private legacy alias; delegates to the public parse_usage_data."""
+        return self.parse_usage_data(xlsx_path)

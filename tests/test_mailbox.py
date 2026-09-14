@@ -1,5 +1,6 @@
 """Tests for the IMAP-based mailbox OTP retrieval with mocked IMAP dependencies."""
 
+import imaplib
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -358,6 +359,27 @@ class TestConnectAndDisconnect:
         """Test that disconnect is a no-op when never connected."""
         await mailbox.disconnect()  # Should not raise
         assert mailbox._connection is None
+
+
+class TestUidSnapshotFailClosed:
+    """Tests for the fail-closed IMAP UID snapshot baseline."""
+
+    def test_snapshot_failure_raises_otperror(self, mailbox):
+        """When the UID search fails, _take_uid_snapshot must raise OTPError."""
+        mailbox._connection = MagicMock()
+        mailbox._connection.uid.side_effect = imaplib.IMAP4.error("server unavailable")
+        with pytest.raises(OTPError, match="Failed to initialize IMAP UID snapshot baseline"):
+            mailbox._take_uid_snapshot()
+
+    def test_snapshot_success_sets_baseline(self, mailbox):
+        """When the UID search succeeds, the baseline is recorded without raising."""
+        mailbox._connection = MagicMock()
+        mailbox._connection.uid.return_value = (
+            "OK",
+            [b"10 20 30"],
+        )
+        mailbox._take_uid_snapshot()
+        assert mailbox._base_uid == 30
 
 
 class TestParseEmailTimestamp:

@@ -537,6 +537,26 @@ class TestAuthenticatedState:
         page.screenshot.assert_awaited_once_with(path=str(Path("output/images/error_auth_failed.png")))
 
     @pytest.mark.asyncio
+    async def test_verify_authentication_strips_query_and_fragment_from_url(self, login):
+        """The diagnostic URL in AuthenticationError has query/fragment stripped."""
+        page = AsyncMock()
+        page.url = "https://ep.iotcc.telkomsel.com/cas/login?ticket=TGT-abc123&service=cmp#token"
+
+        async def _evaluate(js: str):
+            if "window.location.href" in js:
+                return "https://ep.iotcc.telkomsel.com/cas/login?ticket=TGT-abc123"
+            return {"inputs": 1, "bodyChildren": []}
+
+        page.evaluate = AsyncMock(side_effect=_evaluate)
+        with pytest.raises(AuthenticationError, match="Products page was not reached") as excinfo:
+            await login._verify_authentication(page)
+        message = str(excinfo.value)
+        assert "ticket=TGT-abc123" not in message
+        assert "#token" not in message
+        assert "cas/login" in message
+
+
+    @pytest.mark.asyncio
     async def test_auth_dom_summary_is_structural_only(self, login):
         """The auth diagnostic never reads element text or page HTML."""
         js = login._AUTH_DIAGNOSTIC_JS

@@ -64,6 +64,85 @@ def sample_screenshot(tmp_path: Path) -> Path:
     return img_path
 
 
+    def test_workbook_lock_creates_sidecar_and_releases(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """_workbook_lock creates the sidecar lock file and releases cleanly."""
+        from cmp_automation.excel_report import _workbook_lock
+
+        out_path = tmp_path / "out.xlsx"
+        out_path.write_bytes(b"x")
+        lock_path = out_path.parent / f".{out_path.name}.lock"
+
+        with _workbook_lock(out_path, timeout_seconds=1.0):
+            assert lock_path.exists()
+            # Re-entry on the same handle path succeeds because the same
+            # process can re-acquire its own advisory lock.
+            with _workbook_lock(out_path, timeout_seconds=1.0):
+                pass
+
+        # After full release the file persists but the lock is free.
+        assert lock_path.exists()
+
+    def test_update_daily_sheet_holds_lock_during_write(
+        self,
+        generator: ExcelReportGenerator,
+        config: Config,
+        tmp_path: Path,
+    ) -> None:
+        """update_daily_sheet acquires the sidecar lock; verify it's created."""
+        out_path = tmp_path / "Daily-Data-Usage-M2M-202603.xlsx"
+        generator.prepare_template_copy(config.excel_template_path, out_path)
+
+        records = [
+            {"date": "2026-03-01", "iccid": "8962000000000001", "total_usage_bytes": 100},
+        ]
+        generator.update_daily_sheet(out_path, date(2026, 3, 1), records)
+
+        lock_path = out_path.parent / f".{out_path.name}.lock"
+        assert lock_path.exists()
+
+    def test_workbook_lock_timeout_raises(self, tmp_path: Path) -> None:
+        """A contended lock must raise ExcelReportError when the timeout elapses."""
+        import sys
+
+        from cmp_automation.excel_report import _workbook_lock
+
+        out_path = tmp_path / "out.xlsx"
+        out_path.write_bytes(b"x")
+        lock_path = out_path.parent / f".{out_path.name}.lock"
+
+        # Hold the lock in a second process if one is available; otherwise just
+        # verify the context manager times out on a freshly-created lock when we
+        # keep our own handle's lock by re-entering with a different file handle.
+        if sys.platform == "win32":
+            import msvcrt
+
+            handle = open(lock_path, "a+b")
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                with pytest.raises(ExcelReportError, match="Could not acquire workbook lock"):
+                    list(_workbook_lock(out_path, timeout_seconds=0.5))
+            except OSError:
+                pytest.skip("msvcrt.locking unavailable on this Windows build")
+            finally:
+                handle.close()
+        else:
+            import fcntl
+
+            handle = open(lock_path, "a+b")
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with pytest.raises(ExcelReportError, match="Could not acquire workbook lock"):
+                    list(_workbook_lock(out_path, timeout_seconds=0.5))
+            except OSError:
+                pytest.skip("fcntl.flock unavailable on this POSIX build")
+            finally:
+                handle.close()
+
+
 class TestExcelReportGenerator:
     """Tests for Excel report generation."""
 

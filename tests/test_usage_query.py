@@ -228,6 +228,44 @@ class TestUsageQueryExporterInteractions:
         with pytest.raises(UsageQueryError):
             exporter._parse_usage_data(invalid_path)
 
+    def test_parse_usage_data_is_public_and_parses_rows(
+        self, exporter: UsageQueryExporter, tmp_path: Path
+    ):
+        """parse_usage_data is a public method that parses valid Usage Query files."""
+        import openpyxl
+
+        raw_path = tmp_path / "usage_query.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Date", "ICCID", "Total Data Usage"])
+        ws.append(["2026-09-07", "8962100012747108709", 271479072])
+        ws.append(["2026-09-07", "8962100014905470830", 703600954])
+        wb.save(raw_path)
+
+        # Access via the public API without touching the private alias.
+        rows = exporter.parse_usage_data(raw_path)
+        assert len(rows) == 2
+        assert rows[0]["iccid"] == "8962100012747108709"
+        assert rows[0]["total_usage_bytes"] == 271479072
+        assert rows[1]["total_usage_bytes"] == 703600954
+        assert "Date" not in rows[0]  # normalized schema keys only
+
+    def test_parse_usage_data_rejects_legacy_schema(
+        self, exporter: UsageQueryExporter, tmp_path: Path
+    ):
+        """The public parser raises UsageQueryError for legacy Products schema."""
+        import openpyxl
+
+        legacy_path = tmp_path / "legacy.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["MSISDN", "IMSI", "ICCID", "SIM Status", "Billing Status"])
+        ws.append(["08123456789", "5101012345", "896210001", "Active", "Active"])
+        wb.save(legacy_path)
+
+        with pytest.raises(UsageQueryError):
+            exporter.parse_usage_data(legacy_path)
+
     @pytest.mark.asyncio
     async def test_fill_query_dates_focus_fallback_and_no_tab(
         self, exporter: UsageQueryExporter

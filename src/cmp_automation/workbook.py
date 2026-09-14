@@ -79,6 +79,17 @@ def format_day_sheet_name(target_day: int | str | date | datetime) -> str:
     raise TypeError(f"Unsupported day type: {type(target_day)}")
 
 
+def safe_excel_text(val: Any) -> Any:
+    """Neutralize Excel formula injection in text cell values.
+
+    Strings starting with ``=``, ``+``, ``-``, or ``@`` are escaped with a
+    leading single quote so Excel stores them as literal text.
+    """
+    if isinstance(val, str) and val.startswith(("=", "+", "-", "@")):
+        return "'" + val
+    return val
+
+
 def parse_numeric_value(val: Any) -> float:
     """Extract float numeric value from strings like '1,024.50 MB', '500 GB', '123', or numeric types."""
     if val is None:
@@ -435,8 +446,8 @@ def write_data_section(
                     rec_date = str(v).strip()
 
             usage_val = parse_usage_bytes(rec)
-            date_cell.value = rec_date
-            iccid_cell.value = iccid
+            date_cell.value = safe_excel_text(rec_date)
+            iccid_cell.value = safe_excel_text(iccid)
             usage_cell.value = usage_val
         else:
             date_cell.value = None
@@ -485,9 +496,9 @@ def write_top5_section(
             if not loc and iccid:
                 logger.warning("Top 5 record has unmatched location for ICCID")
 
-            ws.cell(row=row, column=8).value = date_str  # H: Date
-            ws.cell(row=row, column=9).value = iccid  # I: ICCID
-            ws.cell(row=row, column=10).value = loc  # J: LOCATION
+            ws.cell(row=row, column=8).value = safe_excel_text(date_str)  # H: Date
+            ws.cell(row=row, column=9).value = safe_excel_text(iccid)  # I: ICCID
+            ws.cell(row=row, column=10).value = safe_excel_text(loc)  # J: LOCATION
             ws.cell(row=row, column=11).value = usage  # K: Bytes
             ws.cell(row=row, column=12).value = f"=K{row}/(1024^3)"  # L: GB formula
         else:

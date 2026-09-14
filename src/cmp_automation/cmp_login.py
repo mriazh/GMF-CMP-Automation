@@ -5,7 +5,7 @@ from collections.abc import Awaitable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Page
@@ -545,7 +545,9 @@ class CMPLogin:
                     )
 
         # Get diagnostic info and raise with it - do not lose the failure context.
-        current_url = self._read_page_url(page)
+        # Strip query strings and fragments so sensitive parameters never leak
+        # into the raised error; keep only scheme, netloc, and path.
+        current_url = self._sanitize_url(self._read_page_url(page))
         dom_summary = await self._get_dom_summary(page)
         try:
             img_dir = Path("output/images")
@@ -557,6 +559,11 @@ class CMPLogin:
             "Authentication verification failed - Products page was not reached",
             f"URL: {current_url}, DOM: {dom_summary}",
         )
+
+    def _sanitize_url(self, url: str) -> str:
+        """Strip query string and fragment from a URL for safe diagnostics."""
+        parts = urlsplit(url)
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
     async def _get_dom_summary(self, page: Page) -> str:
         """Collect a bounded, structural-only DOM diagnostic.

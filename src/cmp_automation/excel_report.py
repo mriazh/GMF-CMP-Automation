@@ -2,7 +2,11 @@
 
 import logging
 import os
+import sys
+import time
 import zipfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from copy import copy
 from datetime import date, datetime
 from pathlib import Path
@@ -18,6 +22,78 @@ from openpyxl.utils import get_column_letter
 from .config import Config
 from .exceptions import ExcelReportError
 from .usage_query import UsageQueryExporter, UsageReportArtifact
+from .workbook import safe_excel_text
+
+if sys.platform == "win32":
+    import msvcrt
+
+    _MSVCRT = msvcrt
+    _FLOCK = None
+else:
+    import fcntl
+
+    _MSVCRT = None  # type: ignore[assignment]
+    _FLOCK = fcntl.flock
+
+WORKBOOK_LOCK_TIMEOUT_SECONDS = 30.0
+
+
+@contextmanager
+def _workbook_lock(
+    output_path: Path,
+    timeout_seconds: float = WORKBOOK_LOCK_TIMEOUT_SECONDS,
+) -> Iterator[None]:
+    """Exclusive advisory inter-process lock for workbook modification.
+
+    Uses a sidecar ``.{output_path.name}.lock`` file. On POSIX the lock is
+    ``fcntl.flock``; on Windows it is ``msvcrt.locking``. Raises
+    ``ExcelReportError`` when the lock cannot be acquired within
+    ``timeout_seconds`` so concurrent runs do not overwrite each other.
+    """
+    lock_path = output_path.parent / f".{output_path.name}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    handle = open(lock_path, "a+b")
+    acquired = False
+    try:
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            if _MSVCRT is not None:
+                try:
+                    handle.seek(0)
+                    _MSVCRT.locking(handle.fileno(), _MSVCRT.LK_NBLCK, 1)
+                    acquired = True
+                    break
+                except OSError:
+                    pass
+            else:
+                assert _FLOCK is not None
+                try:
+                    _FLOCK(handle.fileno(), _FLOCK.LOCK_EX | _FLOCK.LOCK_NB)
+                    acquired = True
+                    break
+                except OSError:
+                    pass
+            if time.monotonic() >= deadline:
+                raise ExcelReportError(
+                    f"Could not acquire workbook lock for {output_path} "
+                    f"within {timeout_seconds:.0f}s (sidecar {lock_path.name}); "
+                    "another process is writing this workbook"
+                )
+            time.sleep(0.25)
+        yield
+    finally:
+        if acquired:
+            if _MSVCRT is not None:
+                try:
+                    handle.seek(0)
+                    _MSVCRT.locking(handle.fileno(), _MSVCRT.LK_UNLCK, 1)
+                except OSError:
+                    pass
+            else:
+                assert _FLOCK is not None
+                _FLOCK(handle.fileno(), _FLOCK.LOCK_UN)
+        handle.close()
 
 logger = logging.getLogger(__name__)
 
@@ -142,10 +218,30 @@ class ExcelReportGenerator:
         records: list[dict[str, Any]],
         screenshot_path: Path | None = None,
     ) -> Path:
-        """Update a specific calendar day sheet (01-31) in the monthly workbook."""
+        """Update a specific calendar day sheet (01-31) in the monthly workbook.
+
+        Runs under an exclusive inter-process lock so concurrent daily runs
+        cannot overwrite each other mid-write.
+        """
         if not output_path.exists():
             raise ExcelReportError(f"Target monthly workbook does not exist: {output_path}")
 
+        with _workbook_lock(output_path):
+            return self._update_daily_sheet_locked(
+                output_path,
+                query_date,
+                records,
+                screenshot_path,
+            )
+
+    def _update_daily_sheet_locked(
+        self,
+        output_path: Path,
+        query_date: date,
+        records: list[dict[str, Any]],
+        screenshot_path: Path | None = None,
+    ) -> Path:
+        """Core day-sheet update; caller must hold the workbook lock."""
         sheet_name = f"{query_date.day:02d}"
         logger.info(
             "Updating day sheet '%s' for date %s in %s with %d records",
@@ -192,8 +288,8 @@ class ExcelReportGenerator:
             usage_bytes = int(rec.get("total_usage_bytes", 0))
 
             ws.cell(row=row, column=2, value=idx + 1)
-            ws.cell(row=row, column=3, value=rec_date)
-            ws.cell(row=row, column=4, value=iccid)
+            ws.cell(row=row, column=3, value=safe_excel_text(str(rec_date)))
+            ws.cell(row=row, column=4, value=safe_excel_text(iccid))
             ws.cell(row=row, column=5, value=usage_bytes)
 
         # Total row 55
@@ -209,9 +305,9 @@ class ExcelReportGenerator:
             usage_bytes = int(rec.get("total_usage_bytes", 0))
 
             ws.cell(row=row, column=7, value=idx + 1)
-            ws.cell(row=row, column=8, value=rec_date)
-            ws.cell(row=row, column=9, value=iccid)
-            ws.cell(row=row, column=10, value=location)
+            ws.cell(row=row, column=8, value=safe_excel_text(str(rec_date)))
+            ws.cell(row=row, column=9, value=safe_excel_text(iccid))
+            ws.cell(row=row, column=10, value=safe_excel_text(location))
             ws.cell(row=row, column=11, value=usage_bytes)
             ws.cell(row=row, column=12, value=f"=K{row}/(1024^3)")
 
@@ -260,7 +356,7 @@ class ExcelReportGenerator:
             if not raw_path.exists():
                 raise ExcelReportError(f"Source XLSX not found: {raw_path}")
             exporter = UsageQueryExporter(self.config)
-            records = exporter._parse_usage_data(raw_path)
+            records = exporter.parse_usage_data(raw_path)
         else:
             raise ExcelReportError(f"Unsupported artifact type: {type(artifact_or_path)}")
 
@@ -329,12 +425,12 @@ class ExcelReportGenerator:
             r = 4 + idx
             if r > 140:
                 break
-            c_o = ws.cell(row=r, column=15, value=iccid)
+            c_o = ws.cell(row=r, column=15, value=safe_excel_text(iccid))
             c_o.font = copy(DATA_FONT)
             c_o.border = copy(THIN_BORDER)
             c_o.alignment = copy(DATA_ALIGNMENT_LEFT)
 
-            c_p = ws.cell(row=r, column=16, value=loc)
+            c_p = ws.cell(row=r, column=16, value=safe_excel_text(loc))
             c_p.font = copy(DATA_FONT)
             c_p.border = copy(THIN_BORDER)
             c_p.alignment = copy(DATA_ALIGNMENT_LEFT)

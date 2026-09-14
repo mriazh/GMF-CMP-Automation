@@ -17,8 +17,26 @@ from cmp_automation.workbook import (
     parse_numeric_value,
     parse_usage_bytes,
     read_lookup_table,
+    safe_excel_text,
     write_lookup_table,
 )
+
+
+def test_safe_excel_text_neutralizes_formula_injection() -> None:
+    """Formula-injection payloads are escaped with a leading single quote."""
+    assert safe_excel_text("=cmd") == "'=cmd"
+    assert safe_excel_text("+1") == "'+1"
+    assert safe_excel_text("-1") == "'-1"
+    assert safe_excel_text("@sum") == "'@sum"
+
+
+def test_safe_excel_text_passes_through_safe_values() -> None:
+    """Normal text and non-string values are returned unchanged."""
+    assert safe_excel_text("8962000001") == "8962000001"
+    assert safe_excel_text("HQ_MAIN") == "HQ_MAIN"
+    assert safe_excel_text("") == ""
+    assert safe_excel_text(1234) == 1234
+    assert safe_excel_text(None) is None
 
 
 @pytest.fixture
