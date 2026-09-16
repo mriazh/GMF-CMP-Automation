@@ -23,6 +23,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from typing import Protocol
 from urllib.parse import urlsplit, urlunsplit
 
@@ -209,7 +210,7 @@ def format_event_message(
     event: str,
     *,
     mode: str | None = None,
-    dates: Sequence[str] | None = None,
+    dates: Sequence[str | date] | None = None,
     elapsed_seconds: float | None = None,
     record_count: int | None = None,
     error_category: str | None = None,
@@ -220,6 +221,10 @@ def format_event_message(
     record count, and a sanitized failure category are ever included. File
     paths are deliberately excluded so every message stays short and readable.
     Everything else is dropped.
+
+    ``dates`` accepts ``str`` and ``date``/``datetime`` values; every item is
+    normalized to its ISO string first, so callers can pass the date objects
+    they already hold without a ``TypeError`` from the redaction pass.
     """
     if event not in _ALLOWED_EVENTS:
         raise ValueError(f"Unsupported notification event: {event}")
@@ -228,7 +233,9 @@ def format_event_message(
     if mode:
         parts.append(f"mode={sanitize_message_text(mode, max_length=32)}")
 
-    target_dates = [d for d in (dates or []) if d]
+    target_dates = [
+        d.isoformat() if isinstance(d, date) else str(d) for d in (dates or []) if d
+    ]
     if len(target_dates) == 1:
         parts.append(f"date={sanitize_message_text(target_dates[0], max_length=32)}")
     elif len(target_dates) > 1:
@@ -273,7 +280,7 @@ class Notifier:
         event: str,
         *,
         mode: str | None = None,
-        dates: Sequence[str] | None = None,
+        dates: Sequence[str | date] | None = None,
         elapsed_seconds: float | None = None,
         record_count: int | None = None,
         error_category: str | None = None,

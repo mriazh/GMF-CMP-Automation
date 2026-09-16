@@ -1,5 +1,6 @@
 """Tests for the CMP login flow with IMAP-based OTP retrieval."""
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock, call, patch
@@ -908,3 +909,184 @@ class TestSubmitToken:
         with patch.object(login, "_try_fill", new=AsyncMock(return_value=False)):
             with pytest.raises(AuthenticationError, match="Could not find token input field"):
                 await login._submit_token(page, "123456")
+class TestWaitForTokenPage:
+    """Token page wait retries once when the credential form never navigated."""
+
+    @pytest.fixture
+    def login(self, config):
+        mailbox = MailboxClient(config)
+        return CMPLogin(config, mailbox)
+
+    @staticmethod
+    def _locator(visible: bool):
+        """Build a locator double exposing visibility, wait, click, and press."""
+        loc = MagicMock()
+        loc.is_visible = AsyncMock(return_value=visible)
+        loc.count = AsyncMock(return_value=1 if visible else 0)
+        loc.wait_for = AsyncMock(side_effect=PlaywrightTimeoutError("hidden"))
+        loc.click = AsyncMock()
+        loc.press = AsyncMock()
+        return loc
+
+    def _page(self, login, state, **visibility):
+        """Build a page double whose token input appears once ``state`` flips.
+
+        ``state["token_ready"]`` gates the token selector waits, so a test can
+        model a token page that only renders after the form is re-submitted.
+        """
+        password_visible = visibility.get("password_visible", False)
+        submit_visible = visibility.get("submit_visible", False)
+        error_visible = visibility.get("error_visible", False)
+
+        async def token_wait(**_kwargs):
+            if state.get("token_ready"):
+                return None
+            raise PlaywrightTimeoutError("token not rendered")
+
+        token = self._locator(False)
+        token.wait_for.side_effect = token_wait
+        password = self._locator(password_visible)
+        submit = self._locator(submit_visible)
+        error = self._locator(error_visible)
+        hidden = self._locator(False)
+
+        def locator(selector: str):
+            if selector in login.TOKEN_INPUT_SELECTORS:
+                return MagicMock(first=token)
+            if selector in login.LOGIN_ERROR_SELECTORS:
+                return MagicMock(first=error)
+            if selector == "#password":
+                return MagicMock(first=password)
+            if selector in login.SUBMIT_SELECTORS:
+                return MagicMock(first=submit)
+            return MagicMock(first=hidden)
+
+        page = MagicMock()
+        page.locator = MagicMock(side_effect=locator)
+        page.screenshot = AsyncMock()
+        page.url = "https://ep.iotcc.telkomsel.com/cas/login?ticket=TGT-abc123"
+        return page, password, submit
+
+    @pytest.mark.asyncio
+    async def test_resubmits_when_credentials_remain_and_token_appears(self, login):
+        """A credential form still on the page is re-submitted once before failing."""
+        state: dict[str, bool] = {}
+        page, _password, submit = self._page(
+            login, state, password_visible=True, submit_visible=True
+        )
+
+        async def click(**_kwargs):
+            state["token_ready"] = True
+
+        submit.click.side_effect = click
+
+        await login._wait_for_token_page(page)
+
+        submit.click.assert_awaited_once()
+        page.screenshot.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_presses_enter_on_password_when_no_submit_button(self, login):
+        """Without a submit control, Enter on #password re-submits the form."""
+        state: dict[str, bool] = {}
+        page, password, _submit = self._page(login, state, password_visible=True)
+
+        async def press(_key: str) -> None:
+            state["token_ready"] = True
+
+        password.press.side_effect = press
+
+        await login._wait_for_token_page(page)
+
+        password.press.assert_awaited_once_with("Enter")
+        page.screenshot.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_token_page_found_on_first_wait_never_resubmits(self, login):
+        """A token input present immediately ends the wait without a re-submit."""
+        page, _password, submit = self._page(
+            login, {"token_ready": True}, password_visible=True, submit_visible=True
+        )
+
+        await login._wait_for_token_page(page)
+
+        submit.click.assert_not_awaited()
+        page.screenshot.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_captures_screenshot_and_raises_when_token_never_loads(self, login, tmp_path):
+        """A token page that never loads captures the failure screenshot and raises."""
+        login.config.image_dir = tmp_path / "images"
+        page, _password, _submit = self._page(login, {})
+
+        with pytest.raises(AuthenticationError, match="Token page did not load"):
+            await login._wait_for_token_page(page)
+
+        page.screenshot.assert_awaited_once_with(
+            path=str(tmp_path / "images" / "error_token_page_failed.png")
+        )
+
+    @pytest.mark.asyncio
+    async def test_screenshot_falls_back_to_default_output_dir(self, login, tmp_path, monkeypatch):
+        """Without an image_dir, the screenshot lands in output/images."""
+        monkeypatch.chdir(tmp_path)
+        login.config.image_dir = None
+        page, _password, _submit = self._page(login, {})
+
+        with pytest.raises(AuthenticationError, match="Token page did not load"):
+            await login._wait_for_token_page(page)
+
+        expected = Path("output/images/error_token_page_failed.png")
+        page.screenshot.assert_awaited_once_with(path=str(expected))
+        assert (tmp_path / "output" / "images").is_dir()
+
+    @pytest.mark.asyncio
+    async def test_error_banner_is_named_but_never_its_text(self, login, tmp_path, caplog):
+        """A visible CAS error banner is logged and named in the raised error."""
+        login.config.image_dir = tmp_path / "images"
+        page, _password, _submit = self._page(login, {}, error_visible=True)
+
+        with caplog.at_level(logging.WARNING, logger="cmp_automation.cmp_login"):
+            with pytest.raises(AuthenticationError, match="Token page did not load") as excinfo:
+                await login._wait_for_token_page(page)
+
+        assert "#msg" in str(excinfo.value)
+        assert "error banner" in caplog.text.lower()
+        # Only the selector names are reported: the banner text is never read,
+        # so no page body content can leak into the error or the log.
+        assert str(excinfo.value).endswith("error banners: #msg, .errors, .alert-danger, .alert")
+        assert page.inner_text.call_count == 0
+        assert page.text_content.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_failure_error_strips_url_query(self, login, tmp_path):
+        """The diagnostic URL keeps only scheme, host, and path."""
+        login.config.image_dir = tmp_path / "images"
+        page, _password, _submit = self._page(login, {})
+
+        with pytest.raises(AuthenticationError, match="Token page did not load") as excinfo:
+            await login._wait_for_token_page(page)
+
+        message = str(excinfo.value)
+        assert "ticket=TGT-abc123" not in message
+        assert "cas/login" in message
+
+    @pytest.mark.asyncio
+    async def test_screenshot_failure_does_not_mask_authentication_error(self, login, tmp_path):
+        """A failing screenshot still raises the original AuthenticationError."""
+        login.config.image_dir = tmp_path / "images"
+        page, _password, _submit = self._page(login, {})
+        page.screenshot = AsyncMock(side_effect=PlaywrightError("page closed"))
+
+        with pytest.raises(AuthenticationError, match="Token page did not load"):
+            await login._wait_for_token_page(page)
+
+    @pytest.mark.asyncio
+    async def test_page_errors_are_treated_as_not_visible(self, login, tmp_path):
+        """A Playwright error while probing the page never escapes as a raw error."""
+        login.config.image_dir = tmp_path / "images"
+        page, _password, _submit = self._page(login, {})
+        page.locator = MagicMock(side_effect=PlaywrightError("target closed"))
+
+        with pytest.raises(AuthenticationError, match="Token page did not load"):
+            await login._wait_for_token_page(page)

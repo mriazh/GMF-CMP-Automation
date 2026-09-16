@@ -1,6 +1,7 @@
 """CMP Portal login and authentication flow."""
 
 import logging
+import time
 from collections.abc import Awaitable
 from datetime import datetime
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Any, cast
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import Page
+from playwright.async_api import Locator, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .auth_diag import AuthDiag
@@ -83,6 +84,15 @@ class CMPLogin:
         'input[value*="Verify" i]',
         'input[value*="Login" i]',
     ]
+
+    # Bounded wait budget for the token page, applied per attempt.
+    TOKEN_PAGE_WAIT_MS = 20000
+    # CAS server-side failure banners (rate limit, invalid credentials, ...).
+    # Only their presence is used, never their text: page text is never read so
+    # nothing from the page body can leak into logs or the raised error.
+    LOGIN_ERROR_SELECTORS = ["#msg", ".errors", ".alert-danger", ".alert"]
+    # Credential fields that prove the form never navigated after submission.
+    CREDENTIAL_SELECTORS = ["#username", "#password"]
 
     # Safe structural DOM diagnostic for the auth failure path: reports only
     # element counts and tag/id/class/role summaries - never element text, so
@@ -310,20 +320,116 @@ class CMPLogin:
         raise AuthenticationError("Could not find login submit button")
 
     async def _wait_for_token_page(self, page: Page) -> None:
-        """Wait for the token/OTP page to appear."""
+        """Wait for the token/OTP page, re-submitting the form once if needed.
+
+        A CAS submit can silently fail to navigate (network latency), leaving the
+        credential form in place. One bounded re-submit is attempted before the
+        failure path captures a diagnostic screenshot and raises.
+        """
         logger.debug("Waiting for token page")
+        if await self._is_token_input_visible(page):
+            return
+
+        error_selectors = await self._visible_login_errors(page)
+        if error_selectors:
+            # Presence only - never the banner text, which may echo the submitted
+            # credentials and must not reach logs or the raised error.
+            logger.warning(
+                "Login page reported an error banner (%s) while waiting for the token page",
+                ", ".join(error_selectors),
+            )
+
+        if await self._credentials_still_visible(page):
+            logger.warning("Credential form still visible; re-submitting login once")
+            await self._resubmit_login(page)
+            if await self._is_token_input_visible(page):
+                logger.info("Token page loaded after login re-submission")
+                return
+
+        await self._capture_token_failure_screenshot(page)
+        current_url = self._sanitize_url(self._read_page_url(page))
+        details = f"URL: {current_url}"
+        if error_selectors:
+            details += f", error banners: {', '.join(error_selectors)}"
+        raise AuthenticationError(
+            "Token page did not load - token input not found",
+            details,
+        )
+
+    async def _is_token_input_visible(self, page: Page) -> bool:
+        """Wait up to ``TOKEN_PAGE_WAIT_MS`` in total for any token selector."""
+        deadline = time.monotonic() + self.TOKEN_PAGE_WAIT_MS / 1000
+        for selector in self.TOKEN_INPUT_SELECTORS:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                return False
+            try:
+                await page.locator(selector).first.wait_for(state="visible", timeout=remaining_ms)
+                logger.debug("Token page detected with selector: %s", selector)
+                return True
+            except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+        return False
+
+    async def _first_visible(self, page: Page, selector: str) -> Locator | None:
+        """Return the first match of ``selector`` when it is visible, else None."""
         try:
-            # Wait for token input field to appear
-            for selector in self.TOKEN_INPUT_SELECTORS:
-                try:
-                    await page.locator(selector).first.wait_for(state="visible", timeout=30000)
-                    logger.debug("Token page detected with selector: %s", selector)
-                    return
-                except PlaywrightTimeoutError:
-                    continue
-            raise AuthenticationError("Token page did not load - token input not found")
-        except PlaywrightTimeoutError as e:
-            raise AuthenticationError("Timeout waiting for token page") from e
+            locator = page.locator(selector).first
+            if await locator.is_visible():
+                return locator
+        except (PlaywrightTimeoutError, PlaywrightError):
+            return None
+        return None
+
+    async def _visible_login_errors(self, page: Page) -> list[str]:
+        """List the CAS error-banner selectors currently visible on the page."""
+        found: list[str] = []
+        for selector in self.LOGIN_ERROR_SELECTORS:
+            if await self._first_visible(page, selector) is not None:
+                found.append(selector)
+        return found
+
+    async def _credentials_still_visible(self, page: Page) -> bool:
+        """Report whether the CAS credential form is still on the page."""
+        for selector in self.CREDENTIAL_SELECTORS:
+            if await self._first_visible(page, selector) is not None:
+                return True
+        return False
+
+    async def _resubmit_login(self, page: Page) -> None:
+        """Re-trigger the CAS form submission (submit click, then Enter)."""
+        for selector in self.SUBMIT_SELECTORS:
+            button = await self._first_visible(page, selector)
+            if button is None:
+                continue
+            try:
+                await button.click(timeout=5000)
+                logger.debug("Re-submitted login form using selector: %s", selector)
+                return
+            except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+        for selector in ("#password", 'input[name="password"]'):
+            field = await self._first_visible(page, selector)
+            if field is None:
+                continue
+            try:
+                await field.press("Enter")
+                logger.debug("Re-submitted login form from password field")
+                return
+            except (PlaywrightTimeoutError, PlaywrightError):
+                continue
+        logger.warning("Login re-submission found no usable submit control")
+
+    async def _capture_token_failure_screenshot(self, page: Page) -> None:
+        """Capture the token-page failure screenshot; never mask the real error."""
+        try:
+            img_dir = Path(self.config.image_dir or "output/images")
+            img_dir.mkdir(parents=True, exist_ok=True)
+            await page.screenshot(path=str(img_dir / "error_token_page_failed.png"))
+        except Exception:
+            # A missing directory or a dying page must not replace the
+            # AuthenticationError that reports the real failure.
+            pass
 
     async def _retrieve_otp(self) -> OTPToken:
         """Retrieve OTP directly from the corporate mailbox via IMAP."""

@@ -9,6 +9,7 @@ import logging
 import urllib.error
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -359,6 +360,25 @@ class TestMessageRedaction:
     def test_date_range_is_rendered_as_a_range(self) -> None:
         """A start/end range renders both boundaries."""
         message = format_event_message(EVENT_START, mode="full", dates=["2026-09-07", "2026-09-08"])
+        assert "dates=2026-09-07..2026-09-08" in message
+
+    def test_date_objects_are_normalized_to_iso_strings(self) -> None:
+        """datetime.date items are rendered as ISO strings, never raising TypeError."""
+        message = format_event_message(
+            EVENT_SUCCESS,
+            mode="full",
+            dates=[date(2026, 9, 16)],
+            record_count=34,
+        )
+        assert "date=2026-09-16" in message
+
+    def test_date_objects_render_a_range(self) -> None:
+        """A range of date objects renders both ISO boundaries."""
+        message = format_event_message(
+            EVENT_START,
+            mode="full",
+            dates=[date(2026, 9, 7), date(2026, 9, 8)],
+        )
         assert "dates=2026-09-07..2026-09-08" in message
 
     def test_success_message_includes_elapsed_and_records_only(self) -> None:
