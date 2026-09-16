@@ -55,20 +55,25 @@ class UsageQueryExporter:
         self.config = config
         self.diagnose_export = diagnose_export
 
-    async def export(self, page: Page, query_date: date | None = None) -> UsageReportArtifact:
+    async def export(
+        self, page: Page, query_date: date | None = None, periodicity: str = "daily"
+    ) -> UsageReportArtifact:
         """Alias for export_usage_query."""
-        return await self.export_usage_query(page, query_date=query_date)
+        return await self.export_usage_query(page, query_date=query_date, periodicity=periodicity)
 
     async def export_usage_query(
-        self, page: Page, query_date: date | None = None
+        self, page: Page, query_date: date | None = None, periodicity: str = "daily"
     ) -> UsageReportArtifact:
         """Execute the full Usage Query export flow."""
         if query_date is None:
             tz = self.config.get_timezone()
             query_date = datetime.now(tz).date()
 
-        date_str = query_date.strftime("%Y-%m-%d")
-        logger.info("Executing Usage Query export for date: %s", date_str)
+        is_monthly = periodicity.lower() == "monthly"
+        date_str = query_date.strftime("%Y-%m") if is_monthly else query_date.strftime("%Y-%m-%d")
+        logger.info(
+            "Executing Usage Query export for date: %s (periodicity=%s)", date_str, periodicity
+        )
 
         # 1. Verify landing state
         await self._verify_landing(page)
@@ -79,8 +84,8 @@ class UsageQueryExporter:
         # 3. Navigate to Usage Query
         await self._navigate_to_usage_query(page)
 
-        # 4. Select Daily report type
-        await self._select_report_type_daily(page)
+        # 4. Select report type
+        await self._select_report_type(page, periodicity=periodicity)
 
         # 5. Fill query dates
         await self._fill_query_dates(page, date_str)
@@ -157,9 +162,13 @@ class UsageQueryExporter:
         """Click Reports main-menu caption and verify #!globalReports."""
         logger.info("Navigating to Reports main menu")
         await self._wait_for_loading(page)
-        reports_menu = page.locator(
-            'div.main-menu-item:has(.main-menu-item-caption:has-text("Reports")), span.main-menu-item-caption:has-text("Reports"), span.main-menu-item-caption'
-        ).filter(has_text="Reports").first
+        reports_menu = (
+            page.locator(
+                'div.main-menu-item:has(.main-menu-item-caption:has-text("Reports")), span.main-menu-item-caption:has-text("Reports"), span.main-menu-item-caption'
+            )
+            .filter(has_text="Reports")
+            .first
+        )
         try:
             await reports_menu.wait_for(state="visible", timeout=30000)
             await reports_menu.click()
@@ -171,7 +180,9 @@ class UsageQueryExporter:
                 await reports_menu.wait_for(state="visible", timeout=30000)
                 await reports_menu.click()
             except Exception as e:
-                if is_approved_portal_url(page.url, self.config.cmp_global_reports_url, "!globalReports"):
+                if is_approved_portal_url(
+                    page.url, self.config.cmp_global_reports_url, "!globalReports"
+                ):
                     logger.info("Already on #!globalReports, proceeding")
                 else:
                     raise UsageQueryError("Failed to find or click 'Reports' menu caption") from e
@@ -184,16 +195,22 @@ class UsageQueryExporter:
                 timeout_ms=30000,
             )
         except PlaywrightTimeoutError as e:
-            if not is_approved_portal_url(page.url, self.config.cmp_global_reports_url, "!globalReports"):
+            if not is_approved_portal_url(
+                page.url, self.config.cmp_global_reports_url, "!globalReports"
+            ):
                 raise UsageQueryError("Timeout waiting for #!globalReports") from e
 
     async def _navigate_to_usage_query(self, page: Page) -> None:
         """Click Usage Query sub-menu caption and verify #!reports."""
         logger.info("Navigating to Usage Query sub-menu")
         await self._wait_for_loading(page)
-        usage_query_menu = page.locator(
-            'div.valo-menu-item:has-text("Usage Query"), span.valo-menu-item-caption:has-text("Usage Query"), span.valo-menu-item-caption'
-        ).filter(has_text="Usage Query").first
+        usage_query_menu = (
+            page.locator(
+                'div.valo-menu-item:has-text("Usage Query"), span.valo-menu-item-caption:has-text("Usage Query"), span.valo-menu-item-caption'
+            )
+            .filter(has_text="Usage Query")
+            .first
+        )
         try:
             await usage_query_menu.wait_for(state="visible", timeout=30000)
             await usage_query_menu.click()
@@ -201,7 +218,9 @@ class UsageQueryExporter:
             if is_approved_portal_url(page.url, self.config.cmp_reports_url, "!reports"):
                 logger.info("Already on #!reports, proceeding")
             else:
-                raise UsageQueryError("Failed to find or click 'Usage Query' submenu caption") from e
+                raise UsageQueryError(
+                    "Failed to find or click 'Usage Query' submenu caption"
+                ) from e
 
         try:
             await self._wait_for_url(
@@ -212,8 +231,15 @@ class UsageQueryExporter:
                 raise UsageQueryError("Timeout waiting for #!reports") from e
 
     async def _select_report_type_daily(self, page: Page) -> None:
-        """Open the report-type filter button and select the Daily menu item."""
-        logger.info("Selecting Report Type: Daily")
+        """Backward compatibility alias for _select_report_type with daily periodicity."""
+        await self._select_report_type(page, periodicity="daily")
+
+    async def _select_report_type(self, page: Page, periodicity: str = "daily") -> None:
+        """Open the report-type filter button and select Daily or Monthly menu item."""
+        is_monthly = periodicity.lower() == "monthly"
+        target_name = "Monthly" if is_monthly else "Daily"
+        opposite_name = "daily" if is_monthly else "monthly"
+        logger.info("Selecting Report Type: %s", target_name)
         await self._wait_for_loading(page)
 
         btn: Locator | None = None
@@ -229,8 +255,8 @@ class UsageQueryExporter:
                 value = await candidate.input_value()
             except Exception:
                 continue
-            if isinstance(value, str) and value.strip().lower() == "daily":
-                logger.info("Report Type is already Daily")
+            if isinstance(value, str) and value.strip().lower() == target_name.lower():
+                logger.info("Report Type is already %s", target_name)
                 return
 
         for index in range(input_count):
@@ -245,7 +271,7 @@ class UsageQueryExporter:
             )
             scoped_button = ancestor.locator("div.v-filterselect-button[role='button']").first
 
-            if isinstance(value, str) and value.strip().lower() == "monthly":
+            if isinstance(value, str) and value.strip().lower() == opposite_name:
                 try:
                     if await scoped_button.count() > 0:
                         btn = scoped_button
@@ -291,7 +317,9 @@ class UsageQueryExporter:
                     "xpath=//*[self::label or contains(@class, 'v-caption') or contains(@class, 'v-captiontext')][contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'report type')]/ancestor::*[contains(@class, 'v-formlayout-row') or contains(@class, 'v-layout') or contains(@class, 'v-widget') or self::tr][1]"
                 ).first
                 if await label_container.count() > 0:
-                    candidate_button = label_container.locator("div.v-filterselect-button[role='button']").first
+                    candidate_button = label_container.locator(
+                        "div.v-filterselect-button[role='button']"
+                    ).first
                     if await candidate_button.count() > 0:
                         btn = candidate_button
             except Exception:
@@ -319,14 +347,18 @@ class UsageQueryExporter:
             await btn.click()
         except PlaywrightTimeoutError as exc:
             raise UsageQueryError("Report Type filterselect button was not ready") from exc
-        daily_option = page.locator(
-            "td.gwt-MenuItem[role='listitem'], .gwt-MenuItem, .v-filterselect-suggestmenu span, div[role='option']"
-        ).filter(has_text="Daily").first
+        daily_option = (
+            page.locator(
+                "td.gwt-MenuItem[role='listitem'], .gwt-MenuItem, .v-filterselect-suggestmenu span, div[role='option']"
+            )
+            .filter(has_text=target_name)
+            .first
+        )
         try:
             await daily_option.wait_for(state="visible", timeout=15000)
             await daily_option.click()
         except PlaywrightTimeoutError as exc:
-            raise UsageQueryError("Daily report type menu item was not ready") from exc
+            raise UsageQueryError(f"{target_name} report type menu item was not ready") from exc
         await self._wait_for_loading(page)
 
     async def _fill_query_dates(self, page: Page, date_str: str) -> None:
@@ -434,9 +466,13 @@ class UsageQueryExporter:
     async def _sort_total_data_usage_descending(self, page: Page) -> None:
         """Click Total Data Usage twice and require numeric largest-to-smallest order."""
         logger.info("Sorting Total Data Usage column descending (largest to smallest)")
-        header = page.locator(
-            ".v-table-header-cell, th, .v-table-caption-container, [role='columnheader'], td"
-        ).filter(has_text="Total Data Usage").first
+        header = (
+            page.locator(
+                ".v-table-header-cell, th, .v-table-caption-container, [role='columnheader'], td"
+            )
+            .filter(has_text="Total Data Usage")
+            .first
+        )
         try:
             try:
                 await header.wait_for(state="visible", timeout=30000)
@@ -461,9 +497,13 @@ class UsageQueryExporter:
                 if hasattr(class_result, "__await__")
                 else class_result
             )
-            if isinstance(marker, str) and marker not in {"", "descending", "desc"} and not any(
-                token in (parent_class if isinstance(parent_class, str) else "").lower()
-                for token in ("sort-desc", "descending")
+            if (
+                isinstance(marker, str)
+                and marker not in {"", "descending", "desc"}
+                and not any(
+                    token in (parent_class if isinstance(parent_class, str) else "").lower()
+                    for token in ("sort-desc", "descending")
+                )
             ):
                 raise SortOrderError("Total Data Usage did not finish in descending order")
         except Exception as exc:
@@ -512,12 +552,18 @@ class UsageQueryExporter:
             # Click Export to xlsx
             import re
 
-            export_option = page.locator(
-                "span.v-menubar-menuitem-caption, .v-menubar-menuitem, .v-menubar-popup [role='menuitem']"
-            ).filter(has_text=re.compile(r"export to (xlsx|excel)", re.IGNORECASE)).first
+            export_option = (
+                page.locator(
+                    "span.v-menubar-menuitem-caption, .v-menubar-menuitem, .v-menubar-popup [role='menuitem']"
+                )
+                .filter(has_text=re.compile(r"export to (xlsx|excel)", re.IGNORECASE))
+                .first
+            )
             if not await export_option.count() or not await export_option.is_visible():
                 export_option = (
-                    page.locator("span.v-menubar-menuitem-caption").filter(has_text="Export to xlsx").first
+                    page.locator("span.v-menubar-menuitem-caption")
+                    .filter(has_text="Export to xlsx")
+                    .first
                 )
                 if not await export_option.count():
                     export_option = page.locator("text='Export to xlsx'").first
@@ -540,7 +586,9 @@ class UsageQueryExporter:
             try:
                 await download_btn.wait_for(state="visible", timeout=120000)
             except PlaywrightTimeoutError as e:
-                raise UsageQueryError("Export processing timed out waiting for Download button") from e
+                raise UsageQueryError(
+                    "Export processing timed out waiting for Download button"
+                ) from e
 
             # Download once and preserve portal raw filename
             try:
@@ -574,7 +622,9 @@ class UsageQueryExporter:
                     if zf.testzip() is not None:
                         raise UsageQueryError(f"Downloaded file is corrupted: {save_path}")
             except zipfile.BadZipFile as e:
-                raise UsageQueryError(f"Downloaded file is not a valid zip/XLSX: {save_path}") from e
+                raise UsageQueryError(
+                    f"Downloaded file is not a valid zip/XLSX: {save_path}"
+                ) from e
 
             return save_path
         except UsageQueryError:
@@ -654,7 +704,7 @@ class UsageQueryExporter:
                 continue
 
             try:
-                usage_bytes = int(usage_val) if isinstance(usage_val, (int, float, str)) else 0
+                usage_bytes = int(usage_val) if isinstance(usage_val, int | float | str) else 0
             except (ValueError, TypeError):
                 usage_bytes = 0
 

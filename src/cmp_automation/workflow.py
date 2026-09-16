@@ -108,6 +108,7 @@ class UsageWorkflowRunner:
         raw_xlsx: Path | None = None,
         image_path: Path | None = None,
         skip_screenshot: bool = False,
+        periodicity: str = "daily",
     ) -> None:
         self.config = config
         self.headed = headed
@@ -117,7 +118,9 @@ class UsageWorkflowRunner:
         self.query_date = query_date
         self.start_date = start_date
         self.end_date = end_date
-        self.monitor_cycles = monitor_cycles if monitor_cycles is not None else config.monitor_max_cycles
+        self.monitor_cycles = (
+            monitor_cycles if monitor_cycles is not None else config.monitor_max_cycles
+        )
         self.connectivity_enabled = (
             config.connectivity_enabled if connectivity_enabled is None else connectivity_enabled
         )
@@ -130,6 +133,7 @@ class UsageWorkflowRunner:
         self.raw_xlsx = raw_xlsx
         self.image_path = image_path
         self.skip_screenshot = skip_screenshot
+        self.periodicity = periodicity
         self.connectivity = ConnectivityController(config)
 
         self.mailbox = MailboxClient(config)
@@ -189,8 +193,13 @@ class UsageWorkflowRunner:
 
                     if success:
                         if self.config.cmp_proxy_server is None:
-                            self.config.cmp_proxy_server = f"socks5://127.0.0.1:{self.config.warp_proxy_port}"
-                            logger.info("Auto-configured WARP SOCKS5 proxy: %s", self.config.cmp_proxy_server)
+                            self.config.cmp_proxy_server = (
+                                f"socks5://127.0.0.1:{self.config.warp_proxy_port}"
+                            )
+                            logger.info(
+                                "Auto-configured WARP SOCKS5 proxy: %s",
+                                self.config.cmp_proxy_server,
+                            )
                     else:
                         logger.warning(
                             "WARP auto-connect could not be established; continuing with configured proxy or direct"
@@ -300,7 +309,9 @@ class UsageWorkflowRunner:
                         logger.info("Step 3: Skipped dashboard screenshot (--skip-screenshot)")
                     else:
                         logger.info("Step 3: Capturing dashboard screenshot")
-                        image_dir = self.config.image_dir or (self.config.excel_output_dir / "images")
+                        image_dir = self.config.image_dir or (
+                            self.config.excel_output_dir / "images"
+                        )
                         image_dir.mkdir(parents=True, exist_ok=True)
                         ts = datetime.now(self.config.get_timezone()).strftime("%Y%m%d_%H%M%S")
                         routed_path = image_dir / f"dashboard_{ts}.png"
@@ -328,6 +339,15 @@ class UsageWorkflowRunner:
                         screenshot_path=screenshot_path,
                         query_date=target_date,
                     )
+                    if getattr(self, "periodicity", "daily") in ("monthly", "both"):
+                        logger.info("Step 4b: Updating Excel monthly report sheet 'Monthly'")
+                        # Export monthly query
+                        monthly_artifact = await self.usage_exporter.export(
+                            page, query_date=target_date, periodicity="monthly"
+                        )
+                        self.excel_report.update_monthly_sheet(
+                            last_report_path, target_date, monthly_artifact.rows
+                        )
                     logger.info("Excel report generated successfully at: %s", last_report_path)
 
             if last_report_path is None:
@@ -362,6 +382,7 @@ async def run_workflow(
     raw_xlsx: Path | None = None,
     image_path: Path | None = None,
     skip_screenshot: bool = False,
+    periodicity: str = "daily",
 ) -> Path:
     """Convenience function to run the full workflow."""
     workflow = UsageWorkflowRunner(
@@ -380,5 +401,6 @@ async def run_workflow(
         raw_xlsx=raw_xlsx,
         image_path=image_path,
         skip_screenshot=skip_screenshot,
+        periodicity=periodicity,
     )
     return await workflow.run()

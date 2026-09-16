@@ -167,6 +167,12 @@ def parse_args() -> argparse.Namespace:
         help="Allow this run to initiate or disconnect owned VPN tunnels",
     )
     parser.add_argument(
+        "--periodicity",
+        choices=["daily", "monthly", "both"],
+        default="daily",
+        help="Query periodicity: daily (default), monthly, or both",
+    )
+    parser.add_argument(
         "--skip-screenshot",
         "--no-screenshot",
         dest="skip_screenshot",
@@ -340,6 +346,7 @@ async def main() -> int:
             raw_xlsx=getattr(args, "raw_xlsx", None),
             image_path=getattr(args, "image", None),
             skip_screenshot=getattr(args, "skip_screenshot", False),
+            periodicity=getattr(args, "periodicity", "daily"),
         )
 
         logger.info("Success! Output: %s", result_path)
@@ -349,10 +356,19 @@ async def main() -> int:
         if result_path and result_path.exists():
             try:
                 import openpyxl
+
                 wb = openpyxl.load_workbook(result_path, read_only=True)
                 # If monthly workbook with day sheets
-                target_sheet = f"{(query_date or date.today()).day:02d}" if (query_date or date.today()) else None
-                ws = wb[target_sheet] if target_sheet and target_sheet in wb.sheetnames else wb.active
+                target_sheet = (
+                    f"{(query_date or date.today()).day:02d}"
+                    if (query_date or date.today())
+                    else None
+                )
+                ws = (
+                    wb[target_sheet]
+                    if target_sheet and target_sheet in wb.sheetnames
+                    else wb.active
+                )
                 if ws is not None:
                     count = 0
                     for row in range(5, 55):
@@ -360,7 +376,11 @@ async def main() -> int:
                             count += 1
                         else:
                             break
-                    rec_count = count if count > 0 else (ws.max_row - 1 if ws.max_row and ws.max_row > 1 else None)
+                    rec_count = (
+                        count
+                        if count > 0
+                        else (ws.max_row - 1 if ws.max_row and ws.max_row > 1 else None)
+                    )
                 wb.close()
             except Exception:
                 rec_count = None

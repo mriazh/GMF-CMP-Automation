@@ -75,7 +75,9 @@ class TestApplyOverrides:
         assert base_config.excel_output_dir == (tmp_path / "new_out").resolve()
         assert base_config.excel_template_path == (tmp_path / "new_tmpl.xlsx").resolve()
 
-    def test_image_dir_override_sets_config_image_dir(self, base_config: Config, tmp_path: Path) -> None:
+    def test_image_dir_override_sets_config_image_dir(
+        self, base_config: Config, tmp_path: Path
+    ) -> None:
         """--image-dir maps strictly to config.image_dir, never download_dir."""
         original_download_dir = base_config.download_dir
         args = argparse.Namespace(
@@ -132,7 +134,9 @@ class TestApplyOverrides:
         assert base_config.connectivity_allow_connect is True
         assert base_config.connectivity_allow_disconnect is True
 
-    def test_allow_connectivity_mutation_false_leaves_flags_unset(self, base_config: Config) -> None:
+    def test_allow_connectivity_mutation_false_leaves_flags_unset(
+        self, base_config: Config
+    ) -> None:
         """When flag is absent or False, connectivity mutation flags stay False."""
         args = argparse.Namespace(
             timeout=None,
@@ -198,7 +202,9 @@ class TestParseArgs:
             args = parse_args()
         assert args.mode == "scrape"
 
-        with patch.object(sys, "argv", ["cmp_automation", "--mode", "generate", "--raw-xlsx", "r.xlsx"]):
+        with patch.object(
+            sys, "argv", ["cmp_automation", "--mode", "generate", "--raw-xlsx", "r.xlsx"]
+        ):
             args = parse_args()
         assert args.mode == "generate"
         assert args.raw_xlsx == Path("r.xlsx")
@@ -208,6 +214,24 @@ class TestParseArgs:
         with patch.object(sys, "argv", ["cmp_automation", "--menu"]):
             args = parse_args()
         assert args.menu is True
+
+    def test_periodicity_defaults_daily(self) -> None:
+        """--periodicity defaults to daily when not supplied."""
+        with patch("sys.argv", ["cmp_automation"]):
+            args = parse_args()
+            assert args.periodicity == "daily"
+
+    def test_periodicity_explicit_monthly(self) -> None:
+        """--periodicity accepts monthly."""
+        with patch("sys.argv", ["cmp_automation", "--periodicity", "monthly"]):
+            args = parse_args()
+            assert args.periodicity == "monthly"
+
+    def test_periodicity_explicit_both(self) -> None:
+        """--periodicity accepts both."""
+        with patch("sys.argv", ["cmp_automation", "--periodicity", "both"]):
+            args = parse_args()
+            assert args.periodicity == "both"
 
     def test_skip_screenshot_defaults_off(self) -> None:
         """Dashboard capture stays on unless the flag is given."""

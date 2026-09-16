@@ -196,6 +196,7 @@ class TestWorkflow:
                 raw_xlsx=None,
                 image_path=None,
                 skip_screenshot=False,
+                periodicity="daily",
             )
             assert result == Path("/tmp/report.xlsx")
 
@@ -372,7 +373,9 @@ class TestWorkflow:
             raw_path = config.excel_output_dir / "raw" / "report.xlsx"
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.write_bytes(b"dummy")
-            mock_export.return_value = UsageReportArtifact(raw_path=raw_path, query_date=date(2026, 3, 1), rows=[])
+            mock_export.return_value = UsageReportArtifact(
+                raw_path=raw_path, query_date=date(2026, 3, 1), rows=[]
+            )
 
             workflow = UsageWorkflowRunner(config, query_date=date(2026, 3, 1), mode="scrape")
             await workflow.run()
@@ -406,7 +409,9 @@ class TestWorkflow:
             raw_path = config.excel_output_dir / "raw" / "report.xlsx"
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.write_bytes(b"dummy")
-            mock_export.return_value = UsageReportArtifact(raw_path=raw_path, query_date=date(2026, 3, 1), rows=[])
+            mock_export.return_value = UsageReportArtifact(
+                raw_path=raw_path, query_date=date(2026, 3, 1), rows=[]
+            )
 
             workflow = UsageWorkflowRunner(config, query_date=date(2026, 3, 1), mode="scrape")
             await workflow.run()
@@ -415,7 +420,9 @@ class TestWorkflow:
             assert config.cmp_proxy_server == "http://my-proxy:8080"
 
     @pytest.mark.asyncio
-    async def test_auto_warp_proxy_failure_soft(self, config: Config, caplog: pytest.LogCaptureFixture) -> None:
+    async def test_auto_warp_proxy_failure_soft(
+        self, config: Config, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Test that failure to prepare WARP proxy logs warning and continues."""
         config.warp_auto_connect = True
         config.warp_mode = "proxy"
@@ -440,7 +447,9 @@ class TestWorkflow:
             raw_path = config.excel_output_dir / "raw" / "report.xlsx"
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.write_bytes(b"dummy")
-            mock_export.return_value = UsageReportArtifact(raw_path=raw_path, query_date=date(2026, 3, 1), rows=[])
+            mock_export.return_value = UsageReportArtifact(
+                raw_path=raw_path, query_date=date(2026, 3, 1), rows=[]
+            )
 
             workflow = UsageWorkflowRunner(config, query_date=date(2026, 3, 1), mode="scrape")
             await workflow.run()
@@ -478,14 +487,19 @@ class TestWorkflow:
             raw_path = config.excel_output_dir / "raw" / "report.xlsx"
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.write_bytes(b"dummy")
-            mock_export.return_value = UsageReportArtifact(raw_path=raw_path, query_date=date(2026, 3, 1), rows=[])
+            mock_export.return_value = UsageReportArtifact(
+                raw_path=raw_path, query_date=date(2026, 3, 1), rows=[]
+            )
 
             workflow = UsageWorkflowRunner(config, query_date=date(2026, 3, 1), mode="scrape")
             await workflow.run()
 
             mock_prepare.assert_called_once_with(40000)
             assert config.cmp_proxy_server == "socks5://127.0.0.1:40000"
-            assert "WARP auto-connect utilizing isolated SOCKS5 proxy mode on port 40000" in caplog.text
+            assert (
+                "WARP auto-connect utilizing isolated SOCKS5 proxy mode on port 40000"
+                in caplog.text
+            )
 
     @pytest.mark.asyncio
     async def test_auto_warp_proxy_skipped_when_full_tunnel_mutation_enabled(
@@ -504,9 +518,15 @@ class TestWorkflow:
             patch("cmp_automation.workflow.browser_context") as mock_browser_context,
             patch.object(WarpClient, "prepare_proxy") as mock_prepare,
             patch("cmp_automation.workflow.shutil.which", return_value="/usr/bin/warp-cli"),
-            patch.object(ConnectivityController, "ensure_authentication_connectivity", new=AsyncMock()),
-            patch.object(ConnectivityController, "release_authentication_connectivity", new=AsyncMock()),
-            patch.object(ConnectivityController, "prepare_monitoring_connectivity", new=AsyncMock()),
+            patch.object(
+                ConnectivityController, "ensure_authentication_connectivity", new=AsyncMock()
+            ),
+            patch.object(
+                ConnectivityController, "release_authentication_connectivity", new=AsyncMock()
+            ),
+            patch.object(
+                ConnectivityController, "prepare_monitoring_connectivity", new=AsyncMock()
+            ),
             patch.object(CMPLogin, "login", new=AsyncMock()),
             patch.object(UsageQueryExporter, "export", new=AsyncMock()) as mock_export,
             patch.object(DashboardCapture, "capture", return_value=Path("/tmp/screenshot.png")),
@@ -521,7 +541,9 @@ class TestWorkflow:
             raw_path = config.excel_output_dir / "raw" / "report.xlsx"
             raw_path.parent.mkdir(parents=True, exist_ok=True)
             raw_path.write_bytes(b"dummy")
-            mock_export.return_value = UsageReportArtifact(raw_path=raw_path, query_date=date(2026, 3, 1), rows=[])
+            mock_export.return_value = UsageReportArtifact(
+                raw_path=raw_path, query_date=date(2026, 3, 1), rows=[]
+            )
 
             workflow = UsageWorkflowRunner(config, query_date=date(2026, 3, 1), mode="scrape")
             await workflow.run()
@@ -531,7 +553,9 @@ class TestWorkflow:
             assert "WARP auto-connect utilizing isolated SOCKS5 proxy mode" not in caplog.text
 
     @pytest.mark.asyncio
-    async def test_dry_run_calls_ensure_proxy_ready_before_browser_context(self, config: Config) -> None:
+    async def test_dry_run_calls_ensure_proxy_ready_before_browser_context(
+        self, config: Config
+    ) -> None:
         """Test dry run calls _ensure_proxy_ready before launching browser_context."""
         call_order = []
 
@@ -541,7 +565,9 @@ class TestWorkflow:
             call_order.append("ensure_proxy")
 
         with (
-            patch.object(workflow, "_ensure_proxy_ready", side_effect=fake_ensure_proxy) as mock_ensure,
+            patch.object(
+                workflow, "_ensure_proxy_ready", side_effect=fake_ensure_proxy
+            ) as mock_ensure,
             patch("cmp_automation.workflow.browser_context") as mock_browser_context,
             patch("cmp_automation.workflow.validate_paths"),
         ):
@@ -584,6 +610,8 @@ class TestWorkflow:
             mock_prepare.assert_called_once_with(40000)
             assert config.cmp_proxy_server == "socks5://127.0.0.1:40000"
             assert "Auto-configured WARP SOCKS5 proxy: socks5://127.0.0.1:40000" in caplog.text
+
+
 class TestSkipScreenshot:
     """skip_screenshot=True bypasses dashboard capture and embedding."""
 

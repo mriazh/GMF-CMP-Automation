@@ -63,7 +63,6 @@ def sample_screenshot(tmp_path: Path) -> Path:
     img.save(img_path)
     return img_path
 
-
     def test_workbook_lock_creates_sidecar_and_releases(
         self,
         tmp_path: Path,
@@ -229,9 +228,9 @@ class TestExcelReportGenerator:
         image = ws._images[0]
         assert image.anchor._from.col == 7
         assert image.anchor._from.row == 14
-        max_width_emu = sum(
-            ws.column_dimensions[column].width or 8.43 for column in "HIJKL"
-        ) * 7 * 9525
+        max_width_emu = (
+            sum(ws.column_dimensions[column].width or 8.43 for column in "HIJKL") * 7 * 9525
+        )
         assert image.anchor.ext.cx <= max_width_emu
 
     def test_rerun_overwrites_cleanly(
@@ -260,6 +259,38 @@ class TestExcelReportGenerator:
         assert ws.cell(row=6, column=4).value is None
         assert ws.cell(row=6, column=5).value is None
         assert ws.cell(row=7, column=4).value is None
+
+    def test_update_monthly_sheet(
+        self,
+        generator: ExcelReportGenerator,
+        config: Config,
+        tmp_path: Path,
+    ) -> None:
+        """Test updating Monthly worksheet with aggregated usage records."""
+        out_path = tmp_path / "Daily-Data-Usage-M2M-202610.xlsx"
+        generator.prepare_template_copy(config.excel_template_path, out_path)
+
+        records = [
+            {"date": "2026-10", "iccid": "8962000000000001", "total_usage_bytes": 5000000},
+            {"date": "2026-10", "iccid": "8962000000000002", "total_usage_bytes": 3000000},
+        ]
+        res = generator.update_monthly_sheet(out_path, "2026-10", records)
+        assert res == out_path
+
+        wb = openpyxl.load_workbook(out_path, data_only=True)
+        ws = wb["Monthly"]
+
+        assert ws["B5"].value == 1
+        assert ws["C5"].value == "2026-10"
+        assert ws["D5"].value == "8962000000000001"
+        assert ws["E5"].value == 5000000
+
+        assert ws["G5"].value == 1
+        assert ws["H5"].value == "2026-10"
+        assert ws["I5"].value == "8962000000000001"
+        assert ws["K5"].value == 5000000
+
+        wb.close()
 
     def test_generate_report_from_artifact(
         self,
@@ -343,7 +374,11 @@ class TestExcelReportGenerator:
             generator.prepare_template_copy(bad_tpl, tmp_path / "out.xlsx")
 
     def test_pruning_non_standard_sheets_in_prepare_and_update(
-        self, generator: ExcelReportGenerator, config: Config, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self,
+        generator: ExcelReportGenerator,
+        config: Config,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Test that non-standard sheets like Sheet1 and AGS 2026 are pruned."""
         dirty_template = tmp_path / "dirty_template.xlsx"

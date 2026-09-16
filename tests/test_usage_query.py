@@ -267,9 +267,7 @@ class TestUsageQueryExporterInteractions:
             exporter.parse_usage_data(legacy_path)
 
     @pytest.mark.asyncio
-    async def test_fill_query_dates_focus_fallback_and_no_tab(
-        self, exporter: UsageQueryExporter
-    ):
+    async def test_fill_query_dates_focus_fallback_and_no_tab(self, exporter: UsageQueryExporter):
         page = AsyncMock()
         first_input = make_mock_locator()
         first_input.click = AsyncMock(side_effect=PlaywrightTimeoutError("click timeout"))
@@ -322,14 +320,10 @@ class TestUsageQueryExporterInteractions:
         page.keyboard.press.assert_awaited_with("Escape")
 
     @pytest.mark.asyncio
-    async def test_submit_search_falls_back_to_force_click(
-        self, exporter: UsageQueryExporter
-    ):
+    async def test_submit_search_falls_back_to_force_click(self, exporter: UsageQueryExporter):
         page = AsyncMock()
         search_btn = make_mock_locator()
-        search_btn.click = AsyncMock(
-            side_effect=[PlaywrightTimeoutError("intercepted"), None]
-        )
+        search_btn.click = AsyncMock(side_effect=[PlaywrightTimeoutError("intercepted"), None])
         page.locator = MagicMock(return_value=search_btn)
         exporter._wait_for_loading = AsyncMock()
 
@@ -346,7 +340,10 @@ class TestUsageQueryExporterInteractions:
         page = AsyncMock()
         search_btn = make_mock_locator()
         search_btn.click = AsyncMock(
-            side_effect=[PlaywrightTimeoutError("intercepted"), PlaywrightTimeoutError("force failed")]
+            side_effect=[
+                PlaywrightTimeoutError("intercepted"),
+                PlaywrightTimeoutError("force failed"),
+            ]
         )
         search_btn.evaluate = AsyncMock(side_effect=PlaywrightTimeoutError("evaluate failed"))
         page.locator = MagicMock(return_value=search_btn)
@@ -360,13 +357,14 @@ class TestUsageQueryExporterInteractions:
         assert "error_search_failed.png" in call_kwargs.get("path", "")
 
     @pytest.mark.asyncio
-    async def test_submit_search_falls_back_to_evaluate_click(
-        self, exporter: UsageQueryExporter
-    ):
+    async def test_submit_search_falls_back_to_evaluate_click(self, exporter: UsageQueryExporter):
         page = AsyncMock()
         search_btn = make_mock_locator()
         search_btn.click = AsyncMock(
-            side_effect=[PlaywrightTimeoutError("intercepted"), PlaywrightTimeoutError("force failed")]
+            side_effect=[
+                PlaywrightTimeoutError("intercepted"),
+                PlaywrightTimeoutError("force failed"),
+            ]
         )
         search_btn.evaluate = AsyncMock(return_value=None)
         page.locator = MagicMock(return_value=search_btn)
@@ -380,12 +378,12 @@ class TestUsageQueryExporterInteractions:
         page.screenshot.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_submit_search_failure_saves_screenshot(
-        self, exporter: UsageQueryExporter
-    ):
+    async def test_submit_search_failure_saves_screenshot(self, exporter: UsageQueryExporter):
         page = AsyncMock()
         search_btn = make_mock_locator()
-        search_btn.wait_for = AsyncMock(side_effect=PlaywrightTimeoutError("search button not visible"))
+        search_btn.wait_for = AsyncMock(
+            side_effect=PlaywrightTimeoutError("search button not visible")
+        )
         page.locator = MagicMock(return_value=search_btn)
         exporter._wait_for_loading = AsyncMock()
 
@@ -406,9 +404,7 @@ class TestUsageQueryExporterInteractions:
         assert exporter.SEARCH_BUTTON_SELECTOR == expected
 
     @pytest.mark.asyncio
-    async def test_wait_for_loading_uses_direct_timeout(
-        self, exporter: UsageQueryExporter
-    ):
+    async def test_wait_for_loading_uses_direct_timeout(self, exporter: UsageQueryExporter):
         page = AsyncMock()
         indicator = make_mock_locator()
         indicator.count = AsyncMock(return_value=1)
@@ -421,9 +417,7 @@ class TestUsageQueryExporterInteractions:
         page.wait_for_load_state.assert_awaited_once_with("domcontentloaded", timeout=60000)
 
     @pytest.mark.asyncio
-    async def test_wait_for_loading_enforces_minimum_1000ms(
-        self, exporter: UsageQueryExporter
-    ):
+    async def test_wait_for_loading_enforces_minimum_1000ms(self, exporter: UsageQueryExporter):
         page = AsyncMock()
         indicator = make_mock_locator()
         indicator.count = AsyncMock(return_value=1)
@@ -436,9 +430,7 @@ class TestUsageQueryExporterInteractions:
         page.wait_for_load_state.assert_awaited_once_with("domcontentloaded", timeout=1000)
 
     @pytest.mark.asyncio
-    async def test_wait_for_loading_default_timeout_15000ms(
-        self, exporter: UsageQueryExporter
-    ):
+    async def test_wait_for_loading_default_timeout_15000ms(self, exporter: UsageQueryExporter):
         page = AsyncMock()
         indicator = make_mock_locator()
         indicator.count = AsyncMock(return_value=1)
@@ -481,9 +473,7 @@ class TestUsageQueryExporterInteractions:
         await exporter._wait_for_loading(page, timeout_ms=1000)
 
     @pytest.mark.asyncio
-    async def test_submit_search_waits_for_loading_and_table(
-        self, exporter: UsageQueryExporter
-    ):
+    async def test_submit_search_waits_for_loading_and_table(self, exporter: UsageQueryExporter):
         page = AsyncMock()
         search_btn = make_mock_locator()
         table_loc = make_mock_locator()
@@ -824,15 +814,14 @@ class TestUsageQueryExporterInteractions:
 
         page.locator = MagicMock(side_effect=locator_se)
 
+        caplog.set_level("INFO")
         await exporter._select_report_type_daily(page)
 
         assert "Report Type is already Daily" in caplog.text
         btn_mock.click.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_select_report_type_daily_monthly_selection(
-        self, exporter: UsageQueryExporter
-    ):
+    async def test_select_report_type_daily_monthly_selection(self, exporter: UsageQueryExporter):
         page = AsyncMock()
         exporter._wait_for_loading = AsyncMock()
 
@@ -873,9 +862,40 @@ class TestUsageQueryExporterInteractions:
         assert expected_option_selector in captured_selectors
 
     @pytest.mark.asyncio
-    async def test_select_report_type_daily_label_matching(
-        self, exporter: UsageQueryExporter
+    async def test_select_report_type_monthly(
+        self, exporter: UsageQueryExporter, caplog: pytest.LogCaptureFixture
     ):
+        page = AsyncMock()
+        exporter._wait_for_loading = AsyncMock()
+
+        btn_mock = make_mock_locator()
+        ancestor_mock = make_mock_locator()
+        ancestor_mock.locator = MagicMock(return_value=btn_mock)
+
+        input_mock = make_mock_locator()
+        input_mock.input_value = AsyncMock(return_value="Daily")
+        input_mock.locator = MagicMock(return_value=ancestor_mock)
+
+        filter_inputs = make_mock_locator()
+        filter_inputs.count = AsyncMock(return_value=1)
+        filter_inputs.nth = MagicMock(return_value=input_mock)
+
+        monthly_option = make_mock_locator()
+
+        def locator_se(selector: str):
+            if "input.v-filterselect-input" in selector:
+                return filter_inputs
+            elif "gwt-MenuItem" in selector or "Monthly" in selector:
+                return monthly_option
+            return make_mock_locator()
+
+        page.locator = MagicMock(side_effect=locator_se)
+
+        await exporter._select_report_type(page, periodicity="monthly")
+        btn_mock.click.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_select_report_type_daily_label_matching(self, exporter: UsageQueryExporter):
         page = AsyncMock()
         exporter._wait_for_loading = AsyncMock()
 

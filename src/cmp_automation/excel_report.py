@@ -96,6 +96,7 @@ def _workbook_lock(
                 _FCNTL.flock(handle.fileno(), _FCNTL.LOCK_UN)
         handle.close()
 
+
 logger = logging.getLogger(__name__)
 
 DAILY_SHEETS = [f"{i:02d}" for i in range(1, 32)]
@@ -138,9 +139,7 @@ class ExcelReportGenerator:
         pruned = []
         for sheet_name in list(wb.sheetnames):
             if sheet_name not in VALID_SHEET_NAMES:
-                logger.warning(
-                    "Pruning non-standard sheet '%s' from monthly workbook", sheet_name
-                )
+                logger.warning("Pruning non-standard sheet '%s' from monthly workbook", sheet_name)
                 wb.remove(wb[sheet_name])
                 pruned.append(sheet_name)
         return pruned
@@ -228,6 +227,102 @@ class ExcelReportGenerator:
                 records,
                 screenshot_path,
             )
+
+    def update_monthly_sheet(
+        self,
+        output_path: Path,
+        query_month: str | date,
+        records: list[dict[str, Any]],
+    ) -> Path:
+        """Update the Monthly sheet with monthly aggregated usage records."""
+        if not output_path.exists():
+            raise ExcelReportError(f"Target monthly workbook does not exist: {output_path}")
+
+        month_label = (
+            query_month.strftime("%Y-%m") if isinstance(query_month, date) else str(query_month)
+        )
+        logger.info(
+            "Updating Monthly sheet for month %s in %s with %d records",
+            month_label,
+            output_path,
+            len(records),
+        )
+
+        with _workbook_lock(output_path):
+            wb = openpyxl.load_workbook(output_path)
+            self._prune_non_standard_sheets(wb)
+
+            monthly_name = next((s for s in wb.sheetnames if s.lower() == "monthly"), None)
+            if monthly_name is None:
+                ws = wb.create_sheet("Monthly")
+            else:
+                ws = wb[monthly_name]
+
+            lookup_map = self._extract_lookup_map(wb)
+
+            # Clear data rows
+            for r in range(5, 55):
+                ws.cell(row=r, column=2).value = r - 4
+                ws.cell(row=r, column=3).value = None
+                ws.cell(row=r, column=4).value = None
+                ws.cell(row=r, column=5).value = None
+
+            for r in range(5, 10):
+                ws.cell(row=r, column=7).value = r - 4
+                ws.cell(row=r, column=8).value = None
+                ws.cell(row=r, column=9).value = None
+                ws.cell(row=r, column=10).value = None
+                ws.cell(row=r, column=11).value = None
+                ws.cell(row=r, column=12).value = f"=K{r}/(1024^3)"
+
+            sorted_records = sorted(
+                records,
+                key=lambda r: int(r.get("total_usage_bytes", 0)),
+                reverse=True,
+            )
+
+            for idx, rec in enumerate(sorted_records[:50]):
+                row = 5 + idx
+                rec_date = rec.get("date") or month_label
+                iccid = str(rec.get("iccid", "")).strip()
+                usage_bytes = int(rec.get("total_usage_bytes", 0))
+
+                ws.cell(row=row, column=2, value=idx + 1)
+                ws.cell(row=row, column=3, value=safe_excel_text(str(rec_date)))
+                ws.cell(row=row, column=4, value=safe_excel_text(iccid))
+                ws.cell(row=row, column=5, value=usage_bytes)
+
+            ws.cell(row=55, column=4, value="TOTAL")
+            ws.cell(row=55, column=5, value="=SUM(E5:E54)")
+
+            for idx, rec in enumerate(sorted_records[:5]):
+                row = 5 + idx
+                rec_date = rec.get("date") or month_label
+                iccid = str(rec.get("iccid", "")).strip()
+                loc = lookup_map.get(iccid, "")
+                usage_bytes = int(rec.get("total_usage_bytes", 0))
+
+                ws.cell(row=row, column=7, value=idx + 1)
+                ws.cell(row=row, column=8, value=safe_excel_text(rec["date"]))
+                ws.cell(row=row, column=9, value=safe_excel_text(iccid))
+                ws.cell(row=row, column=10, value=safe_excel_text(loc))
+                ws.cell(row=row, column=11, value=usage_bytes)
+                ws.cell(row=row, column=12, value=f"=K{row}/(1024^3)")
+
+            ws.cell(row=12, column=8, value="TOTAL USAGE MONTHLY")
+            ws.cell(row=12, column=9, value="Byte")
+            ws.cell(row=12, column=10, value="Gigabyte")
+            ws.cell(row=12, column=11, value="SESSION")
+
+            ws.cell(row=13, column=8, value=None)
+            ws.cell(row=13, column=9, value="=E55")
+            ws.cell(row=13, column=10, value="=I13/(1024^3)")
+            ws.cell(row=13, column=11, value="=COUNTA(D5:D54)")
+
+            self._atomic_save_workbook(wb, output_path)
+
+        logger.info("Successfully updated Monthly sheet in %s", output_path)
+        return output_path
 
     def _update_daily_sheet_locked(
         self,
@@ -346,7 +441,7 @@ class ExcelReportGenerator:
                 query_date = artifact_or_path.query_date
         elif isinstance(artifact_or_path, list):
             records = artifact_or_path
-        elif isinstance(artifact_or_path, (str, Path)):
+        elif isinstance(artifact_or_path, str | Path):
             raw_path = Path(artifact_or_path)
             if not raw_path.exists():
                 raise ExcelReportError(f"Source XLSX not found: {raw_path}")
@@ -371,7 +466,9 @@ class ExcelReportGenerator:
         with _workbook_lock(output_path):
             if not output_path.exists():
                 self.prepare_template_copy(self.config.excel_template_path, output_path, query_date)
-            return self._update_daily_sheet_locked(output_path, query_date, records, screenshot_path)
+            return self._update_daily_sheet_locked(
+                output_path, query_date, records, screenshot_path
+            )
 
     def _extract_lookup_map(self, wb: openpyxl.Workbook) -> dict[str, str]:
         """Extract all unique ICCID -> LOCATION pairs from O5:P140 across all sheets."""
@@ -474,7 +571,9 @@ class ExcelReportGenerator:
         img = XLImage(str(screenshot_path))
         # Keep the image inside columns H:L. Preserve its aspect ratio while
         # fitting the available template width, and anchor at the exact H15 cell.
-        width_units = sum(ws.column_dimensions[get_column_letter(col)].width or 8.43 for col in range(8, 13))
+        width_units = sum(
+            ws.column_dimensions[get_column_letter(col)].width or 8.43 for col in range(8, 13)
+        )
         target_width = max(1, int(width_units * 7))
         if img.width > target_width:
             scale = target_width / img.width
