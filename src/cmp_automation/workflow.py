@@ -107,6 +107,7 @@ class UsageWorkflowRunner:
         mode: str = "full",
         raw_xlsx: Path | None = None,
         image_path: Path | None = None,
+        skip_screenshot: bool = False,
     ) -> None:
         self.config = config
         self.headed = headed
@@ -128,6 +129,7 @@ class UsageWorkflowRunner:
         self.mode = mode
         self.raw_xlsx = raw_xlsx
         self.image_path = image_path
+        self.skip_screenshot = skip_screenshot
         self.connectivity = ConnectivityController(config)
 
         self.mailbox = MailboxClient(config)
@@ -233,7 +235,10 @@ class UsageWorkflowRunner:
             if not raw_xlsx.exists():
                 raise WorkflowError(f"Raw XLSX input does not exist: {raw_xlsx}")
 
-            if image_path is None:
+            if self.skip_screenshot:
+                image_path = None
+                logger.info("Screenshot embedding disabled (--skip-screenshot)")
+            elif image_path is None:
                 image_dir = self.config.image_dir or (self.config.excel_output_dir / "images")
                 match = _find_matching_image(image_dir, target_date)
                 if match is not None:
@@ -290,17 +295,21 @@ class UsageWorkflowRunner:
                     )
 
                     # Step 3: Capture Dashboard Screenshot
-                    logger.info("Step 3: Capturing dashboard screenshot")
-                    image_dir = self.config.image_dir or (self.config.excel_output_dir / "images")
-                    image_dir.mkdir(parents=True, exist_ok=True)
-                    ts = datetime.now(self.config.get_timezone()).strftime("%Y%m%d_%H%M%S")
-                    routed_path = image_dir / f"dashboard_{ts}.png"
-                    screenshot_path = await self.dashboard_capture.capture(page)
-                    if screenshot_path.parent != image_dir and screenshot_path.exists():
-                        screenshot_path.replace(routed_path)
-                        screenshot_path = routed_path
+                    screenshot_path: Path | None = None
+                    if self.skip_screenshot:
+                        logger.info("Step 3: Skipped dashboard screenshot (--skip-screenshot)")
+                    else:
+                        logger.info("Step 3: Capturing dashboard screenshot")
+                        image_dir = self.config.image_dir or (self.config.excel_output_dir / "images")
+                        image_dir.mkdir(parents=True, exist_ok=True)
+                        ts = datetime.now(self.config.get_timezone()).strftime("%Y%m%d_%H%M%S")
+                        routed_path = image_dir / f"dashboard_{ts}.png"
+                        screenshot_path = await self.dashboard_capture.capture(page)
+                        if screenshot_path.parent != image_dir and screenshot_path.exists():
+                            screenshot_path.replace(routed_path)
+                            screenshot_path = routed_path
 
-                    logger.info("Dashboard screenshot captured: %s", screenshot_path)
+                        logger.info("Dashboard screenshot captured: %s", screenshot_path)
 
                     if self.mode == "scrape":
                         logger.info(
@@ -352,6 +361,7 @@ async def run_workflow(
     mode: str = "full",
     raw_xlsx: Path | None = None,
     image_path: Path | None = None,
+    skip_screenshot: bool = False,
 ) -> Path:
     """Convenience function to run the full workflow."""
     workflow = UsageWorkflowRunner(
@@ -369,5 +379,6 @@ async def run_workflow(
         mode=mode,
         raw_xlsx=raw_xlsx,
         image_path=image_path,
+        skip_screenshot=skip_screenshot,
     )
     return await workflow.run()

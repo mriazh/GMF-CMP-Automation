@@ -209,6 +209,24 @@ class TestParseArgs:
             args = parse_args()
         assert args.menu is True
 
+    def test_skip_screenshot_defaults_off(self) -> None:
+        """Dashboard capture stays on unless the flag is given."""
+        with patch.object(sys, "argv", ["cmp_automation"]):
+            args = parse_args()
+        assert args.skip_screenshot is False
+
+    def test_skip_screenshot_flag_enables(self) -> None:
+        """--skip-screenshot sets the suppression flag."""
+        with patch.object(sys, "argv", ["cmp_automation", "--skip-screenshot"]):
+            args = parse_args()
+        assert args.skip_screenshot is True
+
+    def test_no_screenshot_alias_enables(self) -> None:
+        """--no-screenshot is an alias for --skip-screenshot."""
+        with patch.object(sys, "argv", ["cmp_automation", "--no-screenshot"]):
+            args = parse_args()
+        assert args.skip_screenshot is True
+
 
 class TestCliMain:
     """Tests for the cli_main entry point."""
@@ -446,6 +464,7 @@ def build_args(**overrides: object) -> argparse.Namespace:
         "xlsx_dir": None,
         "image_dir": None,
         "excel_template": None,
+        "skip_screenshot": False,
     }
     values.update(overrides)
     return argparse.Namespace(**values)  # type: ignore[arg-type]
@@ -744,3 +763,41 @@ class TestLifecycleNotifications:
 
         assert "2026-03-01" in transport.messages[0]
         assert "2026-03-02" in transport.messages[0]
+
+
+class TestSkipScreenshotWiring:
+    """main() forwards the screenshot suppression flag to run_workflow()."""
+
+    @staticmethod
+    async def capture_workflow_kwargs(args: argparse.Namespace, tmp_path: Path) -> dict[str, Any]:
+        """Run main() with the workflow stubbed and return the call kwargs."""
+        workflow: Any = AsyncMock(return_value=Path("out.xlsx"))
+        with (
+            patch("cmp_automation.cli.parse_args", return_value=args),
+            patch(
+                "cmp_automation.cli.load_config",
+                return_value=build_notified_config(tmp_path, whatsapp_notifications_enabled=False),
+            ),
+            patch("cmp_automation.cli.validate_paths", new=MagicMock()),
+            patch("cmp_automation.cli.run_workflow", new=workflow),
+        ):
+            exit_code = await main()
+
+        assert exit_code == 0
+        return dict(workflow.await_args.kwargs)
+
+    @pytest.mark.asyncio
+    async def test_skip_screenshot_true_is_forwarded(self, tmp_path: Path) -> None:
+        """--skip-screenshot reaches run_workflow() as skip_screenshot=True."""
+        kwargs = await self.capture_workflow_kwargs(
+            build_args(mode="full", skip_screenshot=True), tmp_path
+        )
+
+        assert kwargs["skip_screenshot"] is True
+
+    @pytest.mark.asyncio
+    async def test_skip_screenshot_defaults_false(self, tmp_path: Path) -> None:
+        """An ordinary run forwards skip_screenshot=False."""
+        kwargs = await self.capture_workflow_kwargs(build_args(mode="full"), tmp_path)
+
+        assert kwargs["skip_screenshot"] is False

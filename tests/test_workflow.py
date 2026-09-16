@@ -195,6 +195,7 @@ class TestWorkflow:
                 mode="full",
                 raw_xlsx=None,
                 image_path=None,
+                skip_screenshot=False,
             )
             assert result == Path("/tmp/report.xlsx")
 
@@ -583,3 +584,139 @@ class TestWorkflow:
             mock_prepare.assert_called_once_with(40000)
             assert config.cmp_proxy_server == "socks5://127.0.0.1:40000"
             assert "Auto-configured WARP SOCKS5 proxy: socks5://127.0.0.1:40000" in caplog.text
+class TestSkipScreenshot:
+    """skip_screenshot=True bypasses dashboard capture and embedding."""
+
+    @pytest.mark.asyncio
+    async def test_full_mode_skips_dashboard_capture(self, config: Config) -> None:
+        """Full mode never calls DashboardCapture.capture and passes screenshot=None."""
+        with (
+            patch("cmp_automation.workflow.browser_context") as mock_browser_context,
+            patch.object(CMPLogin, "login", new=AsyncMock()),
+            patch.object(UsageQueryExporter, "export", new=AsyncMock()) as mock_export,
+            patch.object(DashboardCapture, "capture", new=AsyncMock()) as mock_dashboard,
+            patch.object(ExcelReportGenerator, "generate_report") as mock_excel,
+            patch.object(MailboxClient, "disconnect", new=AsyncMock()),
+        ):
+            mock_browser = AsyncMock()
+            mock_page = AsyncMock()
+            mock_browser.new_page = AsyncMock(return_value=mock_page)
+            mock_browser_context.return_value.__aenter__.return_value = mock_browser
+
+            target_date = date(2026, 3, 1)
+            artifact = UsageReportArtifact(
+                raw_path=Path("/tmp/raw.xlsx"),
+                query_date=target_date,
+                rows=[{"date": "2026-03-01", "iccid": "123", "total_usage_bytes": 100}],
+            )
+            mock_export.return_value = artifact
+            mock_excel.return_value = Path("/tmp/monthly_report.xlsx")
+
+            workflow = UsageWorkflowRunner(
+                config, query_date=target_date, mode="full", skip_screenshot=True
+            )
+            result = await workflow.run()
+
+            mock_dashboard.assert_not_called()
+            mock_excel.assert_called_once_with(
+                artifact_or_path=artifact,
+                screenshot_path=None,
+                query_date=target_date,
+            )
+            assert result == Path("/tmp/monthly_report.xlsx")
+
+    @pytest.mark.asyncio
+    async def test_scrape_mode_skips_dashboard_capture(self, config: Config) -> None:
+        """Scrape mode also bypasses capture when screenshots are suppressed."""
+        with (
+            patch("cmp_automation.workflow.browser_context") as mock_browser_context,
+            patch.object(CMPLogin, "login", new=AsyncMock()),
+            patch.object(UsageQueryExporter, "export", new=AsyncMock()) as mock_export,
+            patch.object(DashboardCapture, "capture", new=AsyncMock()) as mock_dashboard,
+            patch.object(MailboxClient, "disconnect", new=AsyncMock()),
+        ):
+            mock_browser = AsyncMock()
+            mock_page = AsyncMock()
+            mock_browser.new_page = AsyncMock(return_value=mock_page)
+            mock_browser_context.return_value.__aenter__.return_value = mock_browser
+            raw_path = config.excel_output_dir / "raw" / "report.xlsx"
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_bytes(b"dummy")
+            mock_export.return_value = UsageReportArtifact(
+                raw_path=raw_path, query_date=date(2026, 3, 1), rows=[]
+            )
+
+            workflow = UsageWorkflowRunner(
+                config, query_date=date(2026, 3, 1), mode="scrape", skip_screenshot=True
+            )
+            result = await workflow.run()
+
+            mock_dashboard.assert_not_called()
+            assert result == raw_path
+
+    @pytest.mark.asyncio
+    async def test_generate_mode_skips_image_discovery(self, config: Config) -> None:
+        """Generate mode ignores an existing image and passes screenshot=None."""
+        target = date(2026, 3, 1)
+        config.raw_xlsx_dir = config.excel_output_dir / "raw"
+        config.image_dir = config.excel_output_dir / "images"
+        config.excel_output_dir.joinpath("raw").mkdir(parents=True, exist_ok=True)
+        config.excel_output_dir.joinpath("images").mkdir(parents=True, exist_ok=True)
+        raw_file = _write_usage_xlsx(
+            config.raw_xlsx_dir / "report_20260302_003000_DAILY_USAGE_by_SIM.xlsx", target
+        )
+        # A matching screenshot exists but must never be picked up.
+        (config.image_dir / "dashboard_20260302_003000.png").write_bytes(b"next-day")
+
+        with patch.object(ExcelReportGenerator, "generate_report") as mock_excel:
+            mock_excel.return_value = config.excel_output_dir / "report.xlsx"
+            workflow = UsageWorkflowRunner(
+                config, query_date=target, mode="generate", skip_screenshot=True
+            )
+            await workflow.run()
+
+            mock_excel.assert_called_once_with(
+                artifact_or_path=raw_file,
+                screenshot_path=None,
+                query_date=target,
+            )
+
+    @pytest.mark.asyncio
+    async def test_generate_mode_ignores_explicit_image_path(
+        self, config: Config, tmp_path: Path
+    ) -> None:
+        """An explicit --image is dropped when screenshots are suppressed."""
+        raw_file = tmp_path / "raw.xlsx"
+        raw_file.write_bytes(b"dummy")
+        img_file = tmp_path / "img.png"
+        img_file.write_bytes(b"dummy")
+
+        with patch.object(ExcelReportGenerator, "generate_report") as mock_excel:
+            mock_excel.return_value = tmp_path / "report.xlsx"
+            workflow = UsageWorkflowRunner(
+                config,
+                query_date=date(2026, 3, 1),
+                mode="generate",
+                raw_xlsx=raw_file,
+                image_path=img_file,
+                skip_screenshot=True,
+            )
+            await workflow.run()
+
+            mock_excel.assert_called_once_with(
+                artifact_or_path=raw_file,
+                screenshot_path=None,
+                query_date=date(2026, 3, 1),
+            )
+
+    @pytest.mark.asyncio
+    async def test_run_workflow_forwards_skip_screenshot(self, config: Config) -> None:
+        """run_workflow() passes skip_screenshot into the runner."""
+        with patch("cmp_automation.workflow.UsageWorkflowRunner") as mock_runner_cls:
+            mock_runner = MagicMock()
+            mock_runner.run = AsyncMock(return_value=Path("/tmp/report.xlsx"))
+            mock_runner_cls.return_value = mock_runner
+
+            await run_workflow(config, query_date=date(2026, 3, 1), skip_screenshot=True)
+
+            assert mock_runner_cls.call_args.kwargs["skip_screenshot"] is True

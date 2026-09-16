@@ -166,6 +166,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow this run to initiate or disconnect owned VPN tunnels",
     )
+    parser.add_argument(
+        "--skip-screenshot",
+        "--no-screenshot",
+        dest="skip_screenshot",
+        action="store_true",
+        help="Skip capturing or embedding dashboard screenshot",
+    )
     return parser.parse_args()
 
 
@@ -332,6 +339,7 @@ async def main() -> int:
             mode=mode,
             raw_xlsx=getattr(args, "raw_xlsx", None),
             image_path=getattr(args, "image", None),
+            skip_screenshot=getattr(args, "skip_screenshot", False),
         )
 
         logger.info("Success! Output: %s", result_path)

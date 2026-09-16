@@ -1,0 +1,41 @@
+# Fully pinned dependency lock for cmp-automation.
+# Generated from the verified working environment; regenerate with:
+#   python -m pip freeze --exclude-editable
+# Runtime dependencies (pyproject [project].dependencies) plus their transitive
+# closure, then the [project.optional-dependencies].dev test/lint/type toolchain.
+
+# --- Runtime ---
+annotated-types==0.8.0
+colorama==0.4.6
+et_xmlfile==2.0.0
+greenlet==3.5.6
+openpyxl==3.1.5
+pillow==12.3.0
+playwright==1.63.0
+pydantic==2.13.5
+pydantic-core==2.46.5
+pydantic-settings==2.15.0
+pyee==13.0.1
+python-dotenv==1.2.4
+typing-extensions==4.16.0
+typing-inspection==0.4.4
+
+# --- Development (test, lint, typecheck) ---
+ast-serialize==0.12.1
+coverage==7.16.2
+iniconfig==2.3.0
+librt==0.16.0
+mypy==2.4.0
+mypy-extensions==1.1.0
+packaging==26.3
+pathspec==1.1.1
+pluggy==1.6.0
+pygments==2.21.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+pytest-mock==3.16.0
+ruff==0.16.10
+
+# --- Platform ---
+tzdata==2026.5; sys_platform == "win32"
