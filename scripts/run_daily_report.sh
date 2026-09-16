@@ -1,7 +1,6 @@
 #!/bin/bash
 # Daily runner script for Telkomsel CMP Automation
-# Calculates H-1 date, detects python environment, executes full pipeline
-# Targets: /home/mriazh/Github-PC/GMF-CMP-Automation
+# Calculates H-1 date, detects python environment, executes full pipeline with automatic retry
 
 set -euo pipefail
 
@@ -35,22 +34,37 @@ else
     exit 1
 fi
 
-# Execute the full pipeline with detailed logging
-log "Executing: $PYTHON -m cmp_automation --mode full --date $YESTERDAY"
-log "Starting pipeline execution..."
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-3}
+RETRY_DELAY=${RETRY_DELAY:-900}
+EXIT_CODE=0
 
-# Run with tee for detailed logging (both stdout and stderr)
-$PYTHON -m cmp_automation --mode full --date "$YESTERDAY" 2>&1 | while IFS= read -r line; do
-    log "$line"
+for ((attempt=1; attempt<=MAX_ATTEMPTS; attempt++)); do
+    log "Attempt $attempt of $MAX_ATTEMPTS executing: $PYTHON -m cmp_automation --mode full --date $YESTERDAY"
+    log "Starting pipeline execution..."
+
+    # Run with tee/loop for detailed logging (both stdout and stderr)
+    set +e
+    $PYTHON -m cmp_automation --mode full --date "$YESTERDAY" 2>&1 | while IFS= read -r line; do
+        log "$line"
+    done
+    EXIT_CODE=${PIPESTATUS[0]}
+    set -e
+
+    if [[ $EXIT_CODE -eq 0 ]]; then
+        log "=== Pipeline completed successfully (exit code: $EXIT_CODE) ==="
+        break
+    else
+        log "=== Pipeline FAILED (attempt $attempt of $MAX_ATTEMPTS, exit code: $EXIT_CODE) ==="
+        if (( attempt < MAX_ATTEMPTS )); then
+            log "Cleaning up stale browser locks..."
+            $PYTHON -c "from pathlib import Path; from cmp_automation.browser import _clear_stale_firefox_lock; cfg_prof = Path('/home/mriazh/cmp_firefox_profile'); _clear_stale_firefox_lock(cfg_prof); loc_prof = Path('firefox_profile'); _clear_stale_firefox_lock(loc_prof)" || true
+            log "Waiting ${RETRY_DELAY}s before retry..."
+            sleep "$RETRY_DELAY"
+        else
+            log "=== Pipeline FAILED after $MAX_ATTEMPTS attempts ==="
+        fi
+    fi
 done
-
-EXIT_CODE=${PIPESTATUS[0]}
-
-if [[ $EXIT_CODE -eq 0 ]]; then
-    log "=== Pipeline completed successfully (exit code: $EXIT_CODE) ==="
-else
-    log "=== Pipeline FAILED (exit code: $EXIT_CODE) ==="
-fi
 
 log "=== Telkomsel CMP Automation Daily Runner Finished ==="
 exit $EXIT_CODE
