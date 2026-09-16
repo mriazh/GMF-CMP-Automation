@@ -9,6 +9,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from .config import Config, load_config, validate_paths
+from .excel_report import ExcelReportGenerator
 from .exceptions import CMPAutomationError, ConfigurationError
 from .logging import log_run_boundary, setup_logging
 from .notifier import (
@@ -173,6 +174,12 @@ def parse_args() -> argparse.Namespace:
         help="Query periodicity: daily (default), monthly, or both",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Force re-crawling even if the target date is already processed in the monthly report",
+    )
+    parser.add_argument(
         "--skip-screenshot",
         "--no-screenshot",
         dest="skip_screenshot",
@@ -324,6 +331,35 @@ async def main() -> int:
         notify_dates = target_dates(query_date, start_date, end_date)
         log_run_boundary("RUN START", f"mode={mode} date={query_date or start_date or 'today'}")
 
+        # Pre-crawl idempotency: skip the crawl entirely when every target date is
+        # already represented in the monthly report (unless --force is given).
+        if (
+            not getattr(args, "force", False)
+            and mode in ("full", "scrape")
+            and getattr(args, "periodicity", "daily") == "daily"
+        ):
+            if start_date and end_date:
+                check_dates = [start_date, end_date]
+            elif query_date:
+                check_dates = [query_date]
+            else:
+                check_dates = [datetime.now(config.get_timezone()).date()]
+            if check_dates:
+                generator = ExcelReportGenerator(config)
+                processed = [
+                    qd
+                    for qd in check_dates
+                    if generator.is_day_processed(qd, generator.get_report_path(qd))
+                ]
+                if len(processed) == len(check_dates):
+                    logger.info(
+                        "All target dates %s already processed in monthly report. "
+                        "Skipping crawl (use --force to re-crawl).",
+                        [d.isoformat() for d in check_dates],
+                    )
+                    log_run_boundary("RUN END", "skipped already_processed")
+                    return 0
+
         # START is sent only after config/argument validation passed.
         if notifier is not None:
             started_at = time.monotonic()
@@ -347,6 +383,7 @@ async def main() -> int:
             image_path=getattr(args, "image", None),
             skip_screenshot=getattr(args, "skip_screenshot", False),
             periodicity=getattr(args, "periodicity", "daily"),
+            force=getattr(args, "force", False),
         )
 
         logger.info("Success! Output: %s", result_path)

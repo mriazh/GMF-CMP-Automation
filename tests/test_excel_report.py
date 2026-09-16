@@ -483,3 +483,72 @@ class TestExcelReportGenerator:
 
         with pytest.raises(ExcelReportError, match="Source template XLSX not found"):
             generator.prepare_template_copy(missing_tpl, sandbox / "out.xlsx")
+
+    def test_get_report_path(self, generator: ExcelReportGenerator, config: Config) -> None:
+        """get_report_path returns the standard monthly workbook path for the date."""
+        expected = config.excel_output_dir / "Daily-Data-Usage-M2M-202603.xlsx"
+        assert generator.get_report_path(date(2026, 3, 10)) == expected
+
+    def test_is_day_processed_true_when_d5_populated(
+        self, generator: ExcelReportGenerator, tmp_path: Path
+    ) -> None:
+        """is_day_processed is True when the day sheet D5 holds an ICCID."""
+        out_path = tmp_path / "Daily-Data-Usage-M2M-202603.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.create_sheet("10")
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+        ws.cell(row=5, column=4, value="8962000000000001")
+        wb.save(out_path)
+        wb.close()
+
+        assert generator.is_day_processed(date(2026, 3, 10), out_path) is True
+
+    def test_is_day_processed_false_when_d5_none(
+        self, generator: ExcelReportGenerator, tmp_path: Path
+    ) -> None:
+        """is_day_processed is False when D5 is None."""
+        out_path = tmp_path / "Daily-Data-Usage-M2M-202603.xlsx"
+        wb = openpyxl.Workbook()
+        wb.create_sheet("10")
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+        wb.save(out_path)
+        wb.close()
+
+        assert generator.is_day_processed(date(2026, 3, 10), out_path) is False
+
+    def test_is_day_processed_false_when_d5_empty(
+        self, generator: ExcelReportGenerator, tmp_path: Path
+    ) -> None:
+        """is_day_processed is False when D5 is an empty string."""
+        out_path = tmp_path / "Daily-Data-Usage-M2M-202603.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.create_sheet("10")
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+        ws.cell(row=5, column=4, value="")
+        wb.save(out_path)
+        wb.close()
+
+        assert generator.is_day_processed(date(2026, 3, 10), out_path) is False
+
+    def test_is_day_processed_false_when_workbook_missing(
+        self, generator: ExcelReportGenerator
+    ) -> None:
+        """is_day_processed is False when the workbook does not exist."""
+        assert generator.is_day_processed(date(2026, 3, 10), Path("/nonexistent.xlsx")) is False
+
+    def test_is_day_processed_false_when_sheet_missing(
+        self, generator: ExcelReportGenerator, tmp_path: Path
+    ) -> None:
+        """is_day_processed is False when the day sheet does not exist."""
+        out_path = tmp_path / "Daily-Data-Usage-M2M-202603.xlsx"
+        wb = openpyxl.Workbook()
+        wb.create_sheet("01")
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+        wb.save(out_path)
+        wb.close()
+
+        assert generator.is_day_processed(date(2026, 3, 10), out_path) is False

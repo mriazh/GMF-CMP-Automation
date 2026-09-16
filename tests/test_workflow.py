@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import openpyxl
 import pytest
 
 from cmp_automation.cmp_login import CMPLogin
@@ -111,6 +112,34 @@ class TestWorkflow:
             assert result == Path("/tmp/monthly_report.xlsx")
 
     @pytest.mark.asyncio
+    async def test_run_skips_already_processed_date(self, config: Config) -> None:
+        """Already-processed target date returns the report path without browser/login."""
+        report_path = config.excel_output_dir / "Daily-Data-Usage-M2M-202603.xlsx"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        wb = openpyxl.Workbook()
+        ws = wb.create_sheet("10")
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+        ws.cell(row=5, column=4, value="8962000000000001")
+        wb.save(report_path)
+        wb.close()
+
+        with (
+            patch("cmp_automation.workflow.browser_context") as mock_browser_context,
+            patch.object(CMPLogin, "login", new=AsyncMock()),
+            patch.object(MailboxClient, "disconnect", new=AsyncMock()),
+        ):
+            mock_browser = AsyncMock()
+            mock_browser.new_page = AsyncMock()
+            mock_browser_context.return_value.__aenter__.return_value = mock_browser
+
+            workflow = UsageWorkflowRunner(config, query_date=date(2026, 3, 10), force=False)
+            result = await workflow.run()
+
+            assert result == report_path
+            mock_browser_context.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_run_workflow_date_range(self, config: Config) -> None:
         """Test running workflow across a date range."""
         with (
@@ -197,6 +226,7 @@ class TestWorkflow:
                 image_path=None,
                 skip_screenshot=False,
                 periodicity="daily",
+                force=False,
             )
             assert result == Path("/tmp/report.xlsx")
 

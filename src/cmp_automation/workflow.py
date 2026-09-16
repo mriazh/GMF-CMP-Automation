@@ -109,6 +109,7 @@ class UsageWorkflowRunner:
         image_path: Path | None = None,
         skip_screenshot: bool = False,
         periodicity: str = "daily",
+        force: bool = False,
     ) -> None:
         self.config = config
         self.headed = headed
@@ -134,6 +135,7 @@ class UsageWorkflowRunner:
         self.image_path = image_path
         self.skip_screenshot = skip_screenshot
         self.periodicity = periodicity
+        self.force = force
         self.connectivity = ConnectivityController(config)
 
         self.mailbox = MailboxClient(config)
@@ -221,6 +223,27 @@ class UsageWorkflowRunner:
         target_dates = self._get_target_dates()
         logger.info("Pipeline mode=%s", self.mode)
         logger.info("Target dates to process: %s", [d.strftime("%Y-%m-%d") for d in target_dates])
+
+        # Pre-crawl idempotency: skip already-processed daily dates before launching browser.
+        if (
+            not self.force
+            and self.mode in ("full", "scrape")
+            and self.periodicity == "daily"
+            and target_dates
+        ):
+            generator = ExcelReportGenerator(self.config)
+            remaining = []
+            for target_date in target_dates:
+                report_path = generator.get_report_path(target_date)
+                if generator.is_day_processed(target_date, report_path):
+                    logger.info("Skipping already processed date %s", target_date.isoformat())
+                else:
+                    remaining.append(target_date)
+            if not remaining:
+                # All target dates already processed: return standard report path without
+                # launching browser or logging in.
+                return generator.get_report_path(target_dates[-1])
+            target_dates = remaining
 
         if self.mode == "generate":
             if len(target_dates) != 1:
@@ -383,6 +406,7 @@ async def run_workflow(
     image_path: Path | None = None,
     skip_screenshot: bool = False,
     periodicity: str = "daily",
+    force: bool = False,
 ) -> Path:
     """Convenience function to run the full workflow."""
     workflow = UsageWorkflowRunner(
@@ -402,5 +426,6 @@ async def run_workflow(
         image_path=image_path,
         skip_screenshot=skip_screenshot,
         periodicity=periodicity,
+        force=force,
     )
     return await workflow.run()

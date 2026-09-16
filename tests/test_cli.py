@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import openpyxl
 import pytest
 
 from cmp_automation.cli import apply_overrides, cli_main, main, parse_args, parse_date_arg
@@ -251,6 +252,18 @@ class TestParseArgs:
             args = parse_args()
         assert args.skip_screenshot is True
 
+    def test_force_flag_defaults_off(self) -> None:
+        """--force is off by default."""
+        with patch.object(sys, "argv", ["cmp_automation"]):
+            args = parse_args()
+        assert args.force is False
+
+    def test_force_flag_parsed(self) -> None:
+        """--force is parsed as True."""
+        with patch.object(sys, "argv", ["cmp_automation", "--force"]):
+            args = parse_args()
+        assert args.force is True
+
 
 class TestCliMain:
     """Tests for the cli_main entry point."""
@@ -305,6 +318,66 @@ class TestCliMain:
                 cli_main()
 
         mock_exit.assert_not_called()
+
+
+class TestPreCrawlIdempotency:
+    """Pre-crawl idempotency skip and --force override."""
+
+    @staticmethod
+    def _write_processed_workbook(config: Config, query_date: date) -> Path:
+        report_path = config.excel_output_dir / f"Daily-Data-Usage-M2M-{query_date:%Y%m}.xlsx"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        wb = openpyxl.Workbook()
+        ws = wb.create_sheet(f"{query_date.day:02d}")
+        if "Sheet" in wb.sheetnames:
+            del wb["Sheet"]
+        ws.cell(row=5, column=4, value="8962000000000001")
+        wb.save(report_path)
+        wb.close()
+        return report_path
+
+    @pytest.mark.asyncio
+    async def test_all_dates_processed_skips_crawl_exits_zero(self, tmp_path: Path) -> None:
+        """All target dates processed: exit 0 without run_workflow or notifications."""
+        config = build_notified_config(tmp_path)
+        args = build_args(mode="full", date="2026-03-10", force=False)
+        self._write_processed_workbook(config, date(2026, 3, 10))
+
+        transport = RecordingNotifierTransport()
+        workflow = AsyncMock()
+        with (
+            patch("cmp_automation.cli.parse_args", return_value=args),
+            patch("cmp_automation.cli.load_config", return_value=config),
+            patch("cmp_automation.cli.validate_paths", new=MagicMock()),
+            patch("cmp_automation.cli.run_workflow", new=workflow),
+            patch("cmp_automation.notifier.http_post_json", new=transport),
+        ):
+            exit_code = await main()
+
+        assert exit_code == 0
+        workflow.assert_not_awaited()
+        assert transport.calls == []
+
+    @pytest.mark.asyncio
+    async def test_force_runs_even_when_processed(self, tmp_path: Path) -> None:
+        """--force runs the workflow even when the target date is already processed."""
+        config = build_notified_config(tmp_path)
+        args = build_args(mode="full", date="2026-03-10", force=True)
+        self._write_processed_workbook(config, date(2026, 3, 10))
+
+        transport = RecordingNotifierTransport()
+        workflow = AsyncMock(return_value=Path("/tmp/out.xlsx"))
+        with (
+            patch("cmp_automation.cli.parse_args", return_value=args),
+            patch("cmp_automation.cli.load_config", return_value=config),
+            patch("cmp_automation.cli.validate_paths", new=MagicMock()),
+            patch("cmp_automation.cli.run_workflow", new=workflow),
+            patch("cmp_automation.notifier.http_post_json", new=transport),
+        ):
+            exit_code = await main()
+
+        assert exit_code == 0
+        workflow.assert_awaited_once()
 
 
 class TestMainFunction:

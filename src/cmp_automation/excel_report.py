@@ -470,6 +470,34 @@ class ExcelReportGenerator:
                 output_path, query_date, records, screenshot_path
             )
 
+    def get_report_path(self, query_date: date) -> Path:
+        """Return the standard monthly workbook output path for ``query_date``."""
+        return self.config.excel_output_dir / f"Daily-Data-Usage-M2M-{query_date:%Y%m}.xlsx"
+
+    def is_day_processed(self, query_date: date, output_path: Path | None = None) -> bool:
+        """Return True if the day sheet for ``query_date`` holds populated usage data.
+
+        A day is considered processed when its sheet (2-digit day name) exists in the
+        monthly workbook and cell D5 is non-empty and non-None. A missing workbook or
+        missing sheet is reported as not processed (False).
+        """
+        if output_path is None:
+            output_path = self.get_report_path(query_date)
+        if not output_path.exists():
+            return False
+        sheet_name = f"{query_date.day:02d}"
+        try:
+            wb = openpyxl.load_workbook(output_path, read_only=True, data_only=True)
+        except Exception:
+            return False
+        try:
+            if sheet_name not in wb.sheetnames:
+                return False
+            value = wb[sheet_name].cell(row=5, column=4).value
+            return value is not None and str(value).strip() != ""
+        finally:
+            wb.close()
+
     def _extract_lookup_map(self, wb: openpyxl.Workbook) -> dict[str, str]:
         """Extract all unique ICCID -> LOCATION pairs from O5:P140 across all sheets."""
         lookup_map: dict[str, str] = {}
