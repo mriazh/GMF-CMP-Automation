@@ -24,15 +24,17 @@ from .exceptions import ExcelReportError
 from .usage_query import UsageQueryExporter, UsageReportArtifact
 from .workbook import safe_excel_text
 
+_MSVCRT: Any = None
+_FCNTL: Any = None
+
 if sys.platform == "win32":
     import msvcrt
 
     _MSVCRT = msvcrt
-    _FCNTL = None
 else:
-    import fcntl as _FCNTL
+    import fcntl
 
-    _MSVCRT = None  # type: ignore[assignment]
+    _FCNTL = fcntl
 
 WORKBOOK_LOCK_TIMEOUT_SECONDS = 30.0
 
