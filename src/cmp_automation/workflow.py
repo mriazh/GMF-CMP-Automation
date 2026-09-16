@@ -317,7 +317,7 @@ class UsageWorkflowRunner:
                         routed_path = image_dir / f"dashboard_{ts}.png"
                         screenshot_path = await self.dashboard_capture.capture(page)
                         if screenshot_path.parent != image_dir and screenshot_path.exists():
-                            screenshot_path.replace(routed_path)
+                            shutil.move(screenshot_path, routed_path)
                             screenshot_path = routed_path
 
                         logger.info("Dashboard screenshot captured: %s", screenshot_path)

@@ -6,6 +6,7 @@ Total Data Usage, exports to XLSX, preserves raw portal filename, and closes pop
 """
 
 import logging
+import shutil
 import zipfile
 from collections.abc import Awaitable
 from dataclasses import dataclass
@@ -611,7 +612,7 @@ class UsageQueryExporter:
                 not save_path.exists()
                 or staged_path.stat().st_mtime_ns >= save_path.stat().st_mtime_ns
             ):
-                staged_path.replace(save_path)
+                shutil.move(staged_path, save_path)
 
             # Validate file
             if not save_path.exists() or save_path.stat().st_size == 0:
