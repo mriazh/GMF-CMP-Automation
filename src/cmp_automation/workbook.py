@@ -595,14 +595,8 @@ class MonthlyWorkbookService:
             except Exception as e:
                 raise WorkbookError(f"Failed to load existing monthly workbook {output_path}: {e}") from e
 
-        if not self.template_path.exists():
-            example_fallback = self.template_path.with_name(
-                self.template_path.stem + ".example" + self.template_path.suffix
-            )
-            if example_fallback.exists() and example_fallback.is_file():
-                self.template_path = example_fallback
-            else:
-                raise WorkbookError(f"Template workbook not found: {self.template_path}")
+        if not (self.template_path.exists() and self.template_path.is_file()):
+            raise WorkbookError(f"Template not found: {self.template_path}")
 
         try:
             wb = load_workbook(self.template_path)

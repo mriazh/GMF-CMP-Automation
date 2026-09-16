@@ -118,6 +118,32 @@ class TestApplyOverrides:
         with pytest.raises(ConfigurationError, match="--timeout must be between 10 and 600"):
             apply_overrides(base_config, args)
 
+    def test_allow_connectivity_mutation_sets_both_connect_and_disconnect(
+        self, base_config: Config
+    ) -> None:
+        """--allow-connectivity-mutation sets both connectivity_allow_connect and _disconnect to True."""
+        args = argparse.Namespace(
+            timeout=None,
+            download_dir=None,
+            profile_dir=None,
+            allow_connectivity_mutation=True,
+        )
+        apply_overrides(base_config, args)
+        assert base_config.connectivity_allow_connect is True
+        assert base_config.connectivity_allow_disconnect is True
+
+    def test_allow_connectivity_mutation_false_leaves_flags_unset(self, base_config: Config) -> None:
+        """When flag is absent or False, connectivity mutation flags stay False."""
+        args = argparse.Namespace(
+            timeout=None,
+            download_dir=None,
+            profile_dir=None,
+            allow_connectivity_mutation=False,
+        )
+        apply_overrides(base_config, args)
+        assert base_config.connectivity_allow_connect is False
+        assert base_config.connectivity_allow_disconnect is False
+
 
 class TestParseArgs:
     """Tests for CLI argument parsing (parse_args reads sys.argv)."""

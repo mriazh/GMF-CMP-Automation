@@ -28,12 +28,11 @@ if sys.platform == "win32":
     import msvcrt
 
     _MSVCRT = msvcrt
-    _FLOCK = None
+    _FCNTL = None
 else:
-    import fcntl
+    import fcntl as _FCNTL
 
     _MSVCRT = None  # type: ignore[assignment]
-    _FLOCK = fcntl.flock
 
 WORKBOOK_LOCK_TIMEOUT_SECONDS = 30.0
 
@@ -67,9 +66,9 @@ def _workbook_lock(
                 except OSError:
                     pass
             else:
-                assert _FLOCK is not None
+                assert _FCNTL is not None
                 try:
-                    _FLOCK(handle.fileno(), _FLOCK.LOCK_EX | _FLOCK.LOCK_NB)
+                    _FCNTL.flock(handle.fileno(), _FCNTL.LOCK_EX | _FCNTL.LOCK_NB)
                     acquired = True
                     break
                 except OSError:
@@ -91,8 +90,8 @@ def _workbook_lock(
                 except OSError:
                     pass
             else:
-                assert _FLOCK is not None
-                _FLOCK(handle.fileno(), _FLOCK.LOCK_UN)
+                assert _FCNTL is not None
+                _FCNTL.flock(handle.fileno(), _FCNTL.LOCK_UN)
         handle.close()
 
 logger = logging.getLogger(__name__)
@@ -170,14 +169,8 @@ class ExcelReportGenerator:
             logger.info("Monthly workbook already exists at: %s", output_path)
             return output_path
 
-        if not template_path.exists():
-            example_fallback = template_path.with_name(
-                template_path.stem + ".example" + template_path.suffix
-            )
-            if example_fallback.exists() and example_fallback.is_file():
-                template_path = example_fallback
-            else:
-                raise ExcelReportError(f"Source template XLSX not found: {template_path}")
+        if not (template_path.exists() and template_path.is_file()):
+            raise ExcelReportError(f"Source template XLSX not found: {template_path}")
 
         logger.info("Preparing new monthly workbook copy: %s -> %s", template_path, output_path)
 
@@ -373,10 +366,10 @@ class ExcelReportGenerator:
             month_str = query_date.strftime("%Y%m")
             output_path = self.config.excel_output_dir / f"Daily-Data-Usage-M2M-{month_str}.xlsx"
 
-        if not output_path.exists():
-            self.prepare_template_copy(self.config.excel_template_path, output_path, query_date)
-
-        return self.update_daily_sheet(output_path, query_date, records, screenshot_path)
+        with _workbook_lock(output_path):
+            if not output_path.exists():
+                self.prepare_template_copy(self.config.excel_template_path, output_path, query_date)
+            return self._update_daily_sheet_locked(output_path, query_date, records, screenshot_path)
 
     def _extract_lookup_map(self, wb: openpyxl.Workbook) -> dict[str, str]:
         """Extract all unique ICCID -> LOCATION pairs from O5:P140 across all sheets."""

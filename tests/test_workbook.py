@@ -262,3 +262,20 @@ def test_clean_day_sheet(sample_image: Path) -> None:
     assert len(ws._images) == 0
     wb.close()
 
+
+def test_load_or_create_monthly_workbook_missing_template_raises_even_if_example_exists(
+    tmp_path: Path,
+) -> None:
+    """MonthlyWorkbookService fails closed: missing template raises WorkbookError even with .example.xlsx."""
+    from cmp_automation.workbook import MonthlyWorkbookService
+
+    example_path = tmp_path / "template.example.xlsx"
+    example_path.write_bytes(b"example content")
+
+    service = MonthlyWorkbookService(
+        template_path=tmp_path / "template.xlsx",
+        output_dir=tmp_path / "output",
+    )
+    with pytest.raises(WorkbookError, match="Template not found"):
+        service.load_or_create_monthly_workbook(date(2026, 5, 1))
+

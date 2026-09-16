@@ -396,3 +396,55 @@ class TestExcelReportGenerator:
         assert res_path.parent == reports_dir
         assert res_path.name == "Daily-Data-Usage-M2M-202604.xlsx"
         assert res_path.exists()
+
+    def test_workbook_lock_posix_fcntl_no_attribute_error(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """_workbook_lock POSIX branch calls fcntl.flock via module attributes, no AttributeError."""
+        from types import SimpleNamespace
+
+        from cmp_automation import excel_report as er
+
+        calls: list[tuple[int, int]] = []
+
+        def fake_flock(fd: int, op: int) -> None:
+            calls.append((fd, op))
+
+        fake_fcntl = SimpleNamespace(
+            LOCK_EX=2,
+            LOCK_NB=4,
+            LOCK_UN=8,
+            flock=fake_flock,
+        )
+
+        # Force the POSIX branch regardless of host platform.
+        monkeypatch.setattr(er, "_MSVCRT", None)
+        monkeypatch.setattr(er, "_FCNTL", fake_fcntl, raising=False)
+
+        out_path = tmp_path / "out.xlsx"
+        out_path.write_bytes(b"x")
+
+        with er._workbook_lock(out_path, timeout_seconds=1.0):
+            pass
+
+        # flock called with combined LOCK_EX|LOCK_NB on acquire, LOCK_UN on release.
+        expected_acquire = fake_fcntl.LOCK_EX | fake_fcntl.LOCK_NB
+        assert any(op == expected_acquire for _, op in calls)
+        assert any(op == fake_fcntl.LOCK_UN for _, op in calls)
+
+    def test_missing_template_raises_even_if_example_exists(
+        self, generator: ExcelReportGenerator, tmp_path: Path
+    ) -> None:
+        """prepare_template_copy must fail-closed even when a .example.xlsx fallback exists."""
+        sandbox = tmp_path / "missing_sandbox"
+        sandbox.mkdir()
+        example_path = sandbox / "template.example.xlsx"
+        example_path.write_bytes(b"example content")
+
+        missing_tpl = sandbox / "template.xlsx"
+        assert not missing_tpl.exists()
+
+        with pytest.raises(ExcelReportError, match="Source template XLSX not found"):
+            generator.prepare_template_copy(missing_tpl, sandbox / "out.xlsx")

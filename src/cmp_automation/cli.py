@@ -195,6 +195,9 @@ def apply_overrides(config: Config, args: argparse.Namespace) -> None:
         config.raw_xlsx_dir = args.raw_xlsx.expanduser().resolve().parent
     if getattr(args, "image", None):
         config.image_dir = args.image.expanduser().resolve().parent
+    if getattr(args, "allow_connectivity_mutation", False):
+        config.connectivity_allow_connect = True
+        config.connectivity_allow_disconnect = True
 
 
 def target_dates(
