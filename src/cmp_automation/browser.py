@@ -33,14 +33,10 @@ def _firefox_process_running() -> bool | None:
             return None
     if sys.platform == "darwin":
         try:
-            res = subprocess.run(
-                ["pgrep", "-x", "firefox"], capture_output=True, check=False
-            )
+            res = subprocess.run(["pgrep", "-x", "firefox"], capture_output=True, check=False)
             return res.returncode == 0
         except (OSError, subprocess.SubprocessError):
-            res = subprocess.run(
-                ["pgrep", "-f", "firefox"], capture_output=True, check=False
-            )
+            res = subprocess.run(["pgrep", "-f", "firefox"], capture_output=True, check=False)
             if res.returncode == 0:
                 return True
             return False
@@ -174,7 +170,9 @@ class BrowserManager:
 
 
 @asynccontextmanager
-async def browser_context(config: Config, headed: bool = False) -> AsyncGenerator[BrowserManager, None]:
+async def browser_context(
+    config: Config, headed: bool = False
+) -> AsyncGenerator[BrowserManager, None]:
     """Async context manager for browser lifecycle."""
     manager = BrowserManager(config, headed)
     try:

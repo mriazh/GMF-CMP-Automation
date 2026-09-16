@@ -156,7 +156,6 @@ def test_parse_usage_bytes() -> None:
     assert parse_usage_bytes({}) == 0
 
 
-
 def test_extract_data_from_xlsx(tmp_path: Path) -> None:
     """Test extracting records from raw CMP xlsx."""
     xlsx_path = tmp_path / "cmp_export.xlsx"
@@ -278,4 +277,3 @@ def test_load_or_create_monthly_workbook_missing_template_raises_even_if_example
     )
     with pytest.raises(WorkbookError, match="Template not found"):
         service.load_or_create_monthly_workbook(date(2026, 5, 1))
-

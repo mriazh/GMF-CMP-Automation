@@ -233,9 +233,7 @@ def format_event_message(
     if mode:
         parts.append(f"mode={sanitize_message_text(mode, max_length=32)}")
 
-    target_dates = [
-        d.isoformat() if isinstance(d, date) else str(d) for d in (dates or []) if d
-    ]
+    target_dates = [d.isoformat() if isinstance(d, date) else str(d) for d in (dates or []) if d]
     if len(target_dates) == 1:
         parts.append(f"date={sanitize_message_text(target_dates[0], max_length=32)}")
     elif len(target_dates) > 1:

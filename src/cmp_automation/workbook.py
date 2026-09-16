@@ -62,7 +62,7 @@ def get_monthly_workbook_path(
 
 def format_day_sheet_name(target_day: int | str | date | datetime) -> str:
     """Format day representation into standard 2-digit day sheet name (e.g. '01', '15')."""
-    if isinstance(target_day, (datetime, date)):
+    if isinstance(target_day, datetime | date):
         return f"{target_day.day:02d}"
     if isinstance(target_day, int):
         if not 1 <= target_day <= 31:
@@ -94,7 +94,7 @@ def parse_numeric_value(val: Any) -> float:
     """Extract float numeric value from strings like '1,024.50 MB', '500 GB', '123', or numeric types."""
     if val is None:
         return 0.0
-    if isinstance(val, (int, float)):
+    if isinstance(val, int | float):
         return float(val)
     if isinstance(val, str):
         cleaned = val.replace(",", "").strip()
@@ -112,15 +112,19 @@ def parse_usage_bytes(record: dict[str, Any] | list[Any] | tuple[Any, ...]) -> i
     if isinstance(record, dict):
         for k, v in record.items():
             k_norm = str(k).lower().replace("_", " ").replace("-", " ").strip()
-            if "total data usage" in k_norm or "data usage" in k_norm or k_norm in ("usage", "bytes", "usage_bytes"):
+            if (
+                "total data usage" in k_norm
+                or "data usage" in k_norm
+                or k_norm in ("usage", "bytes", "usage_bytes")
+            ):
                 if v is not None:
                     return int(parse_numeric_value(v))
         for k, v in record.items():
             if "byte" in str(k).lower() and v is not None:
                 return int(parse_numeric_value(v))
-    elif isinstance(record, (list, tuple)):
+    elif isinstance(record, list | tuple):
         for item in reversed(record):
-            if isinstance(item, (int, float)):
+            if isinstance(item, int | float):
                 return int(item)
             if isinstance(item, str) and item.replace(",", "").strip().isdigit():
                 return int(item.replace(",", "").strip())
@@ -155,11 +159,15 @@ def extract_data_from_xlsx(file_path: Path | str) -> list[dict[str, Any]]:
             row_strs = [str(c).lower().strip() for c in row if c is not None]
             if any("iccid" in s for s in row_strs) or any("usage" in s for s in row_strs):
                 header_idx = idx
-                headers = [str(c).strip() if c is not None else f"col_{i}" for i, c in enumerate(row)]
+                headers = [
+                    str(c).strip() if c is not None else f"col_{i}" for i, c in enumerate(row)
+                ]
                 break
 
         if header_idx == -1:
-            headers = [str(c).strip() if c is not None else f"col_{i}" for i, c in enumerate(rows[0])]
+            headers = [
+                str(c).strip() if c is not None else f"col_{i}" for i, c in enumerate(rows[0])
+            ]
             data_rows = rows[1:]
         else:
             data_rows = rows[header_idx + 1 :]
@@ -178,21 +186,6 @@ def extract_data_from_xlsx(file_path: Path | str) -> list[dict[str, Any]]:
         return records
     finally:
         wb.close()
-
-    """Extract float numeric value from strings like '1,024.50 MB', '500 GB', '123', or numeric types."""
-    if val is None:
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
-    if isinstance(val, str):
-        cleaned = val.replace(",", "").strip()
-        match = re.search(r"[-+]?\d*\.?\d+", cleaned)
-        if match:
-            try:
-                return float(match.group())
-            except ValueError:
-                return 0.0
-    return 0.0
 
 
 def read_lookup_table(
@@ -224,7 +217,9 @@ def read_lookup_table(
 def _get_blue_header_style() -> tuple[Font, PatternFill, Alignment, Border]:
     """Construct standardized blue header styling matching adjacent blue table header."""
     font = Font(name=BLUE_HEADER_FONT_NAME, size=BLUE_HEADER_FONT_SIZE, bold=True, color="000000")
-    fill = PatternFill(start_color=f"FF{BLUE_HEADER_FILL}", end_color=f"FF{BLUE_HEADER_FILL}", fill_type="solid")
+    fill = PatternFill(
+        start_color=f"FF{BLUE_HEADER_FILL}", end_color=f"FF{BLUE_HEADER_FILL}", fill_type="solid"
+    )
     align = Alignment(horizontal="center", vertical="center")
     thin_side = Side(style="thin", color="000000")
     border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
@@ -290,7 +285,6 @@ def write_lookup_table(
                 cell.font = shallow_copy(d_font)
                 cell.alignment = shallow_copy(d_align)
                 cell.border = shallow_copy(d_border)
-
 
 
 def clean_day_sheet(
@@ -389,13 +383,15 @@ def calculate_top5(
         if not loc and iccid:
             logger.warning("Unmatched location for ICCID in top 5 lookup")
 
-        top5.append({
-            "rank": rank,
-            "iccid": iccid,
-            "location": loc,
-            "usage_bytes": usage,
-            "raw_record": rec,
-        })
+        top5.append(
+            {
+                "rank": rank,
+                "iccid": iccid,
+                "location": loc,
+                "usage_bytes": usage,
+                "raw_record": rec,
+            }
+        )
 
     return top5
 
@@ -412,14 +408,13 @@ def calculate_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-
 def write_data_section(
     ws: Worksheet,
     records: list[dict[str, Any]],
     target_date: date | datetime | str,
 ) -> None:
     """Populate main daily usage table into B5:E54 sorted descending by usage."""
-    if isinstance(target_date, (date, datetime)):
+    if isinstance(target_date, date | datetime):
         date_str = target_date.strftime("%Y-%m-%d")
     else:
         date_str = str(target_date).strip()
@@ -469,7 +464,7 @@ def write_top5_section(
     if lookup_dict is None:
         lookup_dict = {}
 
-    if isinstance(target_date, (date, datetime)):
+    if isinstance(target_date, date | datetime):
         date_str = target_date.strftime("%Y-%m-%d")
     else:
         date_str = str(target_date).strip()
@@ -525,7 +520,6 @@ def write_summary_section(
     ws.cell(row=SUMMARY_DATA_ROW, column=11).value = "=COUNTA(D5:D54)"
 
 
-
 class MonthlyWorkbookService:
     """Production service managing monthly Excel workbook, daily sheets, lookups, summaries, top5, and image placement."""
 
@@ -536,7 +530,9 @@ class MonthlyWorkbookService:
         output_dir: Path | str | None = None,
     ) -> None:
         self.config = config
-        self.template_path = Path(template_path) if template_path else Path("config/Daily-Data-Usage-M2M.xlsx")
+        self.template_path = (
+            Path(template_path) if template_path else Path("config/Daily-Data-Usage-M2M.xlsx")
+        )
         self.output_dir = Path(output_dir) if output_dir else Path("output")
 
     def get_monthly_workbook_path(self, target_date: date | datetime | None = None) -> Path:
@@ -593,7 +589,9 @@ class MonthlyWorkbookService:
                 wb = load_workbook(output_path)
                 return wb, False
             except Exception as e:
-                raise WorkbookError(f"Failed to load existing monthly workbook {output_path}: {e}") from e
+                raise WorkbookError(
+                    f"Failed to load existing monthly workbook {output_path}: {e}"
+                ) from e
 
         if not (self.template_path.exists() and self.template_path.is_file()):
             raise WorkbookError(f"Template not found: {self.template_path}")
@@ -601,14 +599,15 @@ class MonthlyWorkbookService:
         try:
             wb = load_workbook(self.template_path)
         except Exception as e:
-            raise WorkbookError(f"Failed to load template workbook {self.template_path}: {e}") from e
+            raise WorkbookError(
+                f"Failed to load template workbook {self.template_path}: {e}"
+            ) from e
 
         lookup = self.extract_lookup_from_workbook(wb)
         self.clean_all_day_sheets(wb)
         self.normalize_lookup_table(wb, lookup)
 
         return wb, True
-
 
     def process_daily_data(
         self,
@@ -626,7 +625,7 @@ class MonthlyWorkbookService:
         - Places dashboard screenshot at H15
         - Preserves all other day sheets and lookup tables
         """
-        if isinstance(records_or_file, (str, Path)):
+        if isinstance(records_or_file, str | Path):
             records = extract_data_from_xlsx(records_or_file)
         else:
             records = records_or_file
@@ -693,4 +692,3 @@ class MonthlyWorkbookService:
             screenshot_path=screenshot_path,
             output_path=output_path,
         )
-

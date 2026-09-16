@@ -88,9 +88,18 @@ class TestOTPTimestampFiltering:
         start_time = datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz)
 
         emails = [
-            {"subject": "CMP - YOUR TOKEN", "received": datetime(2024, 1, 15, 12, 5, 0, tzinfo=jakarta_tz)},
-            {"subject": "CMP - YOUR TOKEN", "received": datetime(2024, 1, 15, 12, 10, 0, tzinfo=jakarta_tz)},
-            {"subject": "CMP - YOUR TOKEN", "received": datetime(2024, 1, 15, 12, 3, 0, tzinfo=jakarta_tz)},
+            {
+                "subject": "CMP - YOUR TOKEN",
+                "received": datetime(2024, 1, 15, 12, 5, 0, tzinfo=jakarta_tz),
+            },
+            {
+                "subject": "CMP - YOUR TOKEN",
+                "received": datetime(2024, 1, 15, 12, 10, 0, tzinfo=jakarta_tz),
+            },
+            {
+                "subject": "CMP - YOUR TOKEN",
+                "received": datetime(2024, 1, 15, 12, 3, 0, tzinfo=jakarta_tz),
+            },
         ]
 
         valid_emails = [e for e in emails if e["received"] >= start_time]
@@ -105,9 +114,18 @@ class TestOTPTimestampFiltering:
         start_time = datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz)
 
         emails = [
-            {"subject": "CMP - YOUR TOKEN", "received": datetime(2024, 1, 15, 11, 59, 0, tzinfo=jakarta_tz)},
-            {"subject": "CMP - YOUR TOKEN", "received": datetime(2024, 1, 15, 11, 58, 0, tzinfo=jakarta_tz)},
-            {"subject": "CMP - YOUR TOKEN", "received": datetime(2024, 1, 14, 12, 0, 0, tzinfo=jakarta_tz)},
+            {
+                "subject": "CMP - YOUR TOKEN",
+                "received": datetime(2024, 1, 15, 11, 59, 0, tzinfo=jakarta_tz),
+            },
+            {
+                "subject": "CMP - YOUR TOKEN",
+                "received": datetime(2024, 1, 15, 11, 58, 0, tzinfo=jakarta_tz),
+            },
+            {
+                "subject": "CMP - YOUR TOKEN",
+                "received": datetime(2024, 1, 14, 12, 0, 0, tzinfo=jakarta_tz),
+            },
         ]
 
         valid_emails = [e for e in emails if e["received"] >= start_time]
@@ -144,10 +162,12 @@ def _run_poll(mailbox, start: datetime, messages: list[_OtpMessage]):
     """Run a single poll cycle with mocked IMAP internals."""
     mailbox._connection = MagicMock()
     uids = [str(index + 1).encode() for index in range(len(messages))]
-    with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
-         patch.object(mailbox, "_search_uids", return_value=uids), \
-         patch.object(mailbox, "_fetch_message", side_effect=[("data",)] * len(messages)), \
-         patch.object(mailbox, "_parse_message", side_effect=messages):
+    with (
+        patch.object(mailbox, "_refresh_mailbox", new=MagicMock()),
+        patch.object(mailbox, "_search_uids", return_value=uids),
+        patch.object(mailbox, "_fetch_message", side_effect=[("data",)] * len(messages)),
+        patch.object(mailbox, "_parse_message", side_effect=messages),
+    ):
         return mailbox._poll_once("CMP - YOUR TOKEN", start)
 
 
@@ -199,9 +219,7 @@ class TestClockSkewTolerance:
 
     def test_zero_tolerance_requires_at_or_after_start(self, mailbox):
         """Test that tolerance=0 preserves the strict pre-tolerance behavior."""
-        strict_config = mailbox.config.model_copy(
-            update={"otp_clock_skew_tolerance_seconds": 0}
-        )
+        strict_config = mailbox.config.model_copy(update={"otp_clock_skew_tolerance_seconds": 0})
         strict_mailbox = MailboxClient(strict_config)
         jakarta_tz = ZoneInfo("Asia/Jakarta")
         start = datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz)
@@ -236,9 +254,9 @@ class TestTimestampNormalization:
             parsed = mailbox.parse_email_timestamp(timestamp_str)
             assert parsed is not None, f"Failed to parse: {timestamp_str}"
             assert parsed.tzinfo is not None, f"Not timezone-aware: {timestamp_str}"
-            assert parsed == datetime(2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz), (
-                f"Unexpected value for: {timestamp_str}"
-            )
+            assert parsed == datetime(
+                2024, 1, 15, 12, 0, 0, tzinfo=jakarta_tz
+            ), f"Unexpected value for: {timestamp_str}"
 
     def test_timezone_offset_parsing(self, mailbox):
         """Test parsing timestamps with timezone offsets."""

@@ -81,9 +81,7 @@ class TestClassifyUrlState:
 
     def test_dashboard_fragment(self):
         assert (
-            classify_url_state(
-                "https://ep.iotcc.telkomsel.com/#!dashboard", APPROVED_HOST
-            )
+            classify_url_state("https://ep.iotcc.telkomsel.com/#!dashboard", APPROVED_HOST)
             == "dashboard"
         )
 
@@ -97,19 +95,11 @@ class TestClassifyUrlState:
         )
 
     def test_portal_root(self):
-        assert (
-            classify_url_state("https://ep.iotcc.telkomsel.com/", APPROVED_HOST)
-            == "portal-root"
-        )
-        assert (
-            classify_url_state("https://ep.iotcc.telkomsel.com", APPROVED_HOST)
-            == "portal-root"
-        )
+        assert classify_url_state("https://ep.iotcc.telkomsel.com/", APPROVED_HOST) == "portal-root"
+        assert classify_url_state("https://ep.iotcc.telkomsel.com", APPROVED_HOST) == "portal-root"
 
     def test_other_host_is_other(self):
-        assert (
-            classify_url_state("https://evil.com/#!products", APPROVED_HOST) == "other"
-        )
+        assert classify_url_state("https://evil.com/#!products", APPROVED_HOST) == "other"
         assert (
             classify_url_state("https://ep.iotcc.telkomsel.com.evil.com/#!products", APPROVED_HOST)
             == "other"
@@ -238,9 +228,7 @@ class TestAuthDiagNoLeak:
         await diag.attach(page)
         page.fire(
             "framenavigated",
-            FakeFrame(
-                "https://ep.iotcc.telkomsel.com/#!products?token=SECRET123", main=True
-            ),
+            FakeFrame("https://ep.iotcc.telkomsel.com/#!products?token=SECRET123", main=True),
         )
         await diag.detach()
         summary = diag.summary()
@@ -254,10 +242,7 @@ class TestAuthDiagNoLeak:
         diag = AuthDiag(APPROVED_HOST)
         await diag.attach(page)
         req = _request(
-            url=(
-                "https://user:pass@ep.iotcc.telkomsel.com/export"
-                "?token=SECRET123&id=42#frag"
-            )
+            url=("https://user:pass@ep.iotcc.telkomsel.com/export?token=SECRET123&id=42#frag")
         )
         page.fire("request", req)
         page.fire("response", _response(req, status=200))

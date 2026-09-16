@@ -50,7 +50,7 @@ def config(tmp_path: Path) -> Config:
     return Config(
         cmp_username="testuser",
         cmp_password="testpassword",
-        gmf_email="test@gmf-aeroasia.co.id",
+        gmf_email="test@company.local",
         gmf_password="mailpassword",
         firefox_profile_dir=profile_dir,
         download_dir=download_dir,
@@ -579,12 +579,16 @@ class TestUsageQueryExporterInteractions:
         download_btn = make_mock_locator()
 
         page.locator = MagicMock(
-            side_effect=lambda sel: menu
-            if ":has-text('Export')" in sel or "aria-label*='Export'" in sel
-            else (
-                option
-                if "role='menuitem'" in sel or "v-menubar-popup" in sel or "Export to xlsx" in sel
-                else download_btn
+            side_effect=lambda sel: (
+                menu
+                if ":has-text('Export')" in sel or "aria-label*='Export'" in sel
+                else (
+                    option
+                    if "role='menuitem'" in sel
+                    or "v-menubar-popup" in sel
+                    or "Export to xlsx" in sel
+                    else download_btn
+                )
             )
         )
         exporter._wait_for_loading = AsyncMock()
@@ -629,12 +633,16 @@ class TestUsageQueryExporterInteractions:
         download_btn = make_mock_locator()
 
         page.locator = MagicMock(
-            side_effect=lambda sel: menu
-            if ":has-text('Export')" in sel or "aria-label*='Export'" in sel
-            else (
-                option
-                if "role='menuitem'" in sel or "v-menubar-popup" in sel or "Export to xlsx" in sel
-                else download_btn
+            side_effect=lambda sel: (
+                menu
+                if ":has-text('Export')" in sel or "aria-label*='Export'" in sel
+                else (
+                    option
+                    if "role='menuitem'" in sel
+                    or "v-menubar-popup" in sel
+                    or "Export to xlsx" in sel
+                    else download_btn
+                )
             )
         )
         exporter._wait_for_loading = AsyncMock()
@@ -676,12 +684,16 @@ class TestUsageQueryExporterInteractions:
         download_btn = make_mock_locator()
 
         page.locator = MagicMock(
-            side_effect=lambda sel: menu
-            if ":has-text('Export')" in sel or "aria-label*='Export'" in sel
-            else (
-                option
-                if "role='menuitem'" in sel or "v-menubar-popup" in sel or "Export to xlsx" in sel
-                else download_btn
+            side_effect=lambda sel: (
+                menu
+                if ":has-text('Export')" in sel or "aria-label*='Export'" in sel
+                else (
+                    option
+                    if "role='menuitem'" in sel
+                    or "v-menubar-popup" in sel
+                    or "Export to xlsx" in sel
+                    else download_btn
+                )
             )
         )
         exporter._wait_for_loading = AsyncMock()

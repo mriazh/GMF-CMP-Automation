@@ -40,7 +40,10 @@ def completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProc
 def test_parse_checkpoint_connected_status() -> None:
     output = "Conn CORP-VPN:\n\tstatus: Connected\n\tgateway list:\n\t*(Connected) CORP-GATEWAY01"
     assert parse_checkpoint_status(output, "CORP-VPN").connected is True
-    assert parse_checkpoint_status("Conn CORP-VPN:\n\tstatus: Disconnected", "CORP-VPN").connected is False
+    assert (
+        parse_checkpoint_status("Conn CORP-VPN:\n\tstatus: Disconnected", "CORP-VPN").connected
+        is False
+    )
 
 
 def test_parse_warp_status() -> None:

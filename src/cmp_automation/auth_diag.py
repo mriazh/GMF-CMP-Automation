@@ -162,9 +162,7 @@ class AuthDiag:
             return
         category = classify_url_state(frame.url, self._approved_host)
         is_main = frame is self._page.main_frame
-        self._nav_events.append(
-            f"framenavigated:{'main' if is_main else 'frame'}:{category}"
-        )
+        self._nav_events.append(f"framenavigated:{'main' if is_main else 'frame'}:{category}")
         self._append_url_state(category)
 
     # -- sampling ---------------------------------------------------------

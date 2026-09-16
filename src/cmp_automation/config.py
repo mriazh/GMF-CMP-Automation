@@ -49,6 +49,15 @@ class Config(BaseSettings):
         description="Corporate IMAP server port",
         validation_alias=AliasChoices("corp_imap_port", "gmf_imap_port"),
     )
+    corp_imap_fallback_host: str | None = Field(
+        default=None,
+        description="Optional fallback IMAP host or IP (e.g. for split-DNS/VPN/Tailscale environments)",
+        validation_alias=AliasChoices(
+            "corp_imap_fallback_host",
+            "gmf_imap_fallback_host",
+            "imap_fallback_host",
+        ),
+    )
 
     # Firefox Configuration
     firefox_profile_dir: Path = Field(
@@ -58,9 +67,7 @@ class Config(BaseSettings):
     raw_xlsx_dir: Path | None = Field(
         default=None, description="Directory for preserved raw portal XLSX files"
     )
-    image_dir: Path | None = Field(
-        default=None, description="Directory for dashboard screenshots"
-    )
+    image_dir: Path | None = Field(default=None, description="Directory for dashboard screenshots")
 
     # Legacy property getters for backward compatibility
     @property
@@ -76,11 +83,14 @@ class Config(BaseSettings):
         return self.corp_imap_host
 
     @property
+    def gmf_imap_fallback_host(self) -> str | None:
+        return self.corp_imap_fallback_host
+
+    @property
     def gmf_imap_port(self) -> int:
         return self.corp_imap_port
-    logs_dir: Path | None = Field(
-        default=None, description="Directory for application log files"
-    )
+
+    logs_dir: Path | None = Field(default=None, description="Directory for application log files")
 
     # OTP Configuration
     otp_timeout_seconds: int = Field(
@@ -121,7 +131,9 @@ class Config(BaseSettings):
         description="Confirmed Check Point trac executable path",
     )
     checkpoint_site: str = Field(default="CORP-VPN", description="Confirmed Check Point site")
-    checkpoint_gateway: str = Field(default="CORP-GATEWAY01", description="Confirmed Check Point gateway")
+    checkpoint_gateway: str = Field(
+        default="CORP-GATEWAY01", description="Confirmed Check Point gateway"
+    )
     warp_cli_path: Path = Field(
         default=Path(r"C:\Program Files\Cloudflare\Cloudflare WARP\warp-cli.exe"),
         description="Confirmed Cloudflare WARP CLI path",
@@ -285,6 +297,15 @@ class Config(BaseSettings):
             raise ValueError("IMAP host must not be empty")
         return v.strip()
 
+    @field_validator("corp_imap_fallback_host")
+    @classmethod
+    def validate_imap_fallback_host(cls, v: str | None) -> str | None:
+        """Optional IMAP fallback host must not be empty string if set."""
+        if v is None:
+            return None
+        v_stripped = v.strip()
+        return v_stripped if v_stripped else None
+
     @field_validator("checkpoint_trac_path", "warp_cli_path", mode="before")
     @classmethod
     def expand_connectivity_path(cls, v: str | Path) -> Path:
@@ -294,7 +315,10 @@ class Config(BaseSettings):
     @classmethod
     def validate_warp_trace_url(cls, v: str) -> str:
         parsed = urlparse(v)
-        if parsed.scheme != "https" or parsed.hostname not in {"cloudflare.com", "www.cloudflare.com"}:
+        if parsed.scheme != "https" or parsed.hostname not in {
+            "cloudflare.com",
+            "www.cloudflare.com",
+        }:
             raise ValueError("WARP trace URL must use an approved HTTPS Cloudflare host")
         if parsed.username or parsed.password or parsed.port:
             raise ValueError("WARP trace URL must not contain credentials or a port")
@@ -361,7 +385,12 @@ def validate_paths(config: Config) -> None:
     except OSError as e:
         raise ConfigurationError("Download directory is not writable") from e
 
-    artifact_dirs = [config.raw_xlsx_dir, config.image_dir, config.excel_output_dir, config.logs_dir]
+    artifact_dirs = [
+        config.raw_xlsx_dir,
+        config.image_dir,
+        config.excel_output_dir,
+        config.logs_dir,
+    ]
     for artifact_dir in artifact_dirs:
         if artifact_dir is not None:
             artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -369,7 +398,9 @@ def validate_paths(config: Config) -> None:
                 raise ConfigurationError(f"Artifact path is not a directory: {artifact_dir}")
 
     if not config.excel_template_path.exists() or not config.excel_template_path.is_file():
-        raise ConfigurationError(f"Excel template file does not exist: {config.excel_template_path}")
+        raise ConfigurationError(
+            f"Excel template file does not exist: {config.excel_template_path}"
+        )
 
     config.excel_output_dir.mkdir(parents=True, exist_ok=True)
     if not config.excel_output_dir.is_dir():

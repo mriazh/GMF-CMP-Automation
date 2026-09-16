@@ -58,17 +58,20 @@ class TestLoginFlow:
         def record(name: str):
             def _record(*args, **kwargs) -> None:
                 order.append(name)
+
             return _record
 
-        with patch.object(login, "_is_authenticated", new=AsyncMock(return_value=False)), \
-             patch.object(login, "_navigate_to_login", new=AsyncMock()), \
-             patch.object(mailbox, "connect", new=AsyncMock(side_effect=record("connect"))), \
-             patch.object(login, "_fill_credentials", new=AsyncMock(side_effect=record("fill"))), \
-             patch.object(login, "_submit_login", new=AsyncMock(side_effect=record("submit"))), \
-             patch.object(login, "_wait_for_token_page", new=AsyncMock()), \
-             patch.object(mailbox, "get_latest_otp", new=AsyncMock(return_value=_token())), \
-             patch.object(login, "_submit_token", new=AsyncMock()), \
-             patch.object(login, "_verify_authentication", new=AsyncMock()):
+        with (
+            patch.object(login, "_is_authenticated", new=AsyncMock(return_value=False)),
+            patch.object(login, "_navigate_to_login", new=AsyncMock()),
+            patch.object(mailbox, "connect", new=AsyncMock(side_effect=record("connect"))),
+            patch.object(login, "_fill_credentials", new=AsyncMock(side_effect=record("fill"))),
+            patch.object(login, "_submit_login", new=AsyncMock(side_effect=record("submit"))),
+            patch.object(login, "_wait_for_token_page", new=AsyncMock()),
+            patch.object(mailbox, "get_latest_otp", new=AsyncMock(return_value=_token())),
+            patch.object(login, "_submit_token", new=AsyncMock()),
+            patch.object(login, "_verify_authentication", new=AsyncMock()),
+        ):
             await login.login(page)
 
         assert order == ["connect", "fill", "submit"]
@@ -80,9 +83,11 @@ class TestLoginFlow:
         login = CMPLogin(config, mailbox)
         page = AsyncMock()
 
-        with patch.object(login, "_is_authenticated", new=AsyncMock(return_value=True)), \
-             patch.object(mailbox, "connect", new=AsyncMock()) as mock_connect, \
-             patch.object(login, "_fill_credentials", new=AsyncMock()) as mock_fill:
+        with (
+            patch.object(login, "_is_authenticated", new=AsyncMock(return_value=True)),
+            patch.object(mailbox, "connect", new=AsyncMock()) as mock_connect,
+            patch.object(login, "_fill_credentials", new=AsyncMock()) as mock_fill,
+        ):
             await login.login(page)
 
         mock_connect.assert_not_awaited()
@@ -96,25 +101,25 @@ class TestLoginFlow:
         assert login.diagnose_auth is False
 
         page = AsyncMock()
-        with patch.object(login, "_is_authenticated", new=AsyncMock(return_value=False)), \
-             patch.object(login, "_navigate_to_login", new=AsyncMock()), \
-             patch.object(mailbox, "connect", new=AsyncMock()), \
-             patch.object(login, "_fill_credentials", new=AsyncMock()), \
-             patch.object(login, "_submit_login", new=AsyncMock()), \
-             patch.object(login, "_wait_for_token_page", new=AsyncMock()), \
-             patch.object(mailbox, "get_latest_otp", new=AsyncMock(return_value=_token())), \
-             patch.object(login, "_submit_token", new=AsyncMock()), \
-             patch.object(login, "_verify_authentication", new=AsyncMock()), \
-             patch("cmp_automation.cmp_login.AuthDiag") as mock_diag_cls:
+        with (
+            patch.object(login, "_is_authenticated", new=AsyncMock(return_value=False)),
+            patch.object(login, "_navigate_to_login", new=AsyncMock()),
+            patch.object(mailbox, "connect", new=AsyncMock()),
+            patch.object(login, "_fill_credentials", new=AsyncMock()),
+            patch.object(login, "_submit_login", new=AsyncMock()),
+            patch.object(login, "_wait_for_token_page", new=AsyncMock()),
+            patch.object(mailbox, "get_latest_otp", new=AsyncMock(return_value=_token())),
+            patch.object(login, "_submit_token", new=AsyncMock()),
+            patch.object(login, "_verify_authentication", new=AsyncMock()),
+            patch("cmp_automation.cmp_login.AuthDiag") as mock_diag_cls,
+        ):
             await login.login(page)
 
         # With the flag off, no diagnostic is ever constructed or attached.
         mock_diag_cls.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_diagnose_auth_attaches_before_token_submit_and_detaches_after(
-        self, config
-    ):
+    async def test_diagnose_auth_attaches_before_token_submit_and_detaches_after(self, config):
         """The auth diagnostic wraps exactly the token-submit/verify span.
 
         Attach happens immediately before ``_submit_token``; detach (and the
@@ -133,26 +138,30 @@ class TestLoginFlow:
         # the test double must be a plain Mock, not an AsyncMock.
         fake_diag.summary = Mock(return_value="final_url=cas-login")
 
-        with patch.object(login, "_is_authenticated", new=AsyncMock(return_value=False)), \
-             patch.object(login, "_navigate_to_login", new=AsyncMock()), \
-             patch.object(mailbox, "connect", new=AsyncMock()), \
-             patch.object(login, "_fill_credentials", new=AsyncMock()), \
-             patch.object(login, "_submit_login", new=AsyncMock()), \
-             patch.object(login, "_wait_for_token_page", new=AsyncMock()), \
-             patch.object(mailbox, "get_latest_otp", new=AsyncMock(return_value=_token())), \
-             patch.object(
-                 login, "_submit_token", new=AsyncMock(side_effect=lambda *a, **k: order.append("submit"))
-             ), \
-             patch.object(
-                 login, "_verify_authentication", new=AsyncMock(side_effect=lambda _p: order.append("verify"))
-             ), \
-             patch("cmp_automation.cmp_login.AuthDiag", return_value=fake_diag) as mock_diag_cls:
+        with (
+            patch.object(login, "_is_authenticated", new=AsyncMock(return_value=False)),
+            patch.object(login, "_navigate_to_login", new=AsyncMock()),
+            patch.object(mailbox, "connect", new=AsyncMock()),
+            patch.object(login, "_fill_credentials", new=AsyncMock()),
+            patch.object(login, "_submit_login", new=AsyncMock()),
+            patch.object(login, "_wait_for_token_page", new=AsyncMock()),
+            patch.object(mailbox, "get_latest_otp", new=AsyncMock(return_value=_token())),
+            patch.object(
+                login,
+                "_submit_token",
+                new=AsyncMock(side_effect=lambda *a, **k: order.append("submit")),
+            ),
+            patch.object(
+                login,
+                "_verify_authentication",
+                new=AsyncMock(side_effect=lambda _p: order.append("verify")),
+            ),
+            patch("cmp_automation.cmp_login.AuthDiag", return_value=fake_diag) as mock_diag_cls,
+        ):
             await login.login(page)
 
         assert order == ["attach", "submit", "verify", "detach"]
-        mock_diag_cls.assert_called_once_with(
-            approved_host="ep.iotcc.telkomsel.com"
-        )
+        mock_diag_cls.assert_called_once_with(approved_host="ep.iotcc.telkomsel.com")
         fake_diag.attach.assert_awaited_once_with(page)
         fake_diag.detach.assert_awaited_once()
         # Verify summary was called synchronously (not awaited)
@@ -182,16 +191,18 @@ class TestLoginFlow:
             order.append("verify")
             raise AuthenticationError("Products page was not reached")
 
-        with patch.object(login, "_is_authenticated", new=AsyncMock(return_value=False)), \
-             patch.object(login, "_navigate_to_login", new=AsyncMock()), \
-             patch.object(mailbox, "connect", new=AsyncMock()), \
-             patch.object(login, "_fill_credentials", new=AsyncMock()), \
-             patch.object(login, "_submit_login", new=AsyncMock()), \
-             patch.object(login, "_wait_for_token_page", new=AsyncMock()), \
-             patch.object(mailbox, "get_latest_otp", new=AsyncMock(return_value=_token())), \
-             patch.object(login, "_submit_token", new=AsyncMock()), \
-             patch.object(login, "_verify_authentication", new=AsyncMock(side_effect=_fail)), \
-             patch("cmp_automation.cmp_login.AuthDiag", return_value=fake_diag):
+        with (
+            patch.object(login, "_is_authenticated", new=AsyncMock(return_value=False)),
+            patch.object(login, "_navigate_to_login", new=AsyncMock()),
+            patch.object(mailbox, "connect", new=AsyncMock()),
+            patch.object(login, "_fill_credentials", new=AsyncMock()),
+            patch.object(login, "_submit_login", new=AsyncMock()),
+            patch.object(login, "_wait_for_token_page", new=AsyncMock()),
+            patch.object(mailbox, "get_latest_otp", new=AsyncMock(return_value=_token())),
+            patch.object(login, "_submit_token", new=AsyncMock()),
+            patch.object(login, "_verify_authentication", new=AsyncMock(side_effect=_fail)),
+            patch("cmp_automation.cmp_login.AuthDiag", return_value=fake_diag),
+        ):
             with pytest.raises(AuthenticationError, match="Products page was not reached"):
                 await login.login(page)
 
@@ -223,15 +234,13 @@ class TestPortalUrlValidation:
 
     def test_lookalike_host_rejected(self, login):
         """Test that a lookalike host with the approved name embedded is rejected."""
-        assert login._is_products_page(
-            "https://ep.iotcc.telkomsel.com.evil.com/#!products"
-        ) is False
+        assert (
+            login._is_products_page("https://ep.iotcc.telkomsel.com.evil.com/#!products") is False
+        )
 
     def test_subdomain_host_rejected(self, login):
         """Test that a subdomain of the approved host is rejected."""
-        assert login._is_products_page(
-            "https://sub.ep.iotcc.telkomsel.com/#!products"
-        ) is False
+        assert login._is_products_page("https://sub.ep.iotcc.telkomsel.com/#!products") is False
 
     def test_wrong_fragment_rejected(self, login):
         """Test that the Products check rejects other fragments."""
@@ -240,18 +249,12 @@ class TestPortalUrlValidation:
 
     def test_non_root_path_rejected(self, login):
         """Test that a non-root path is rejected."""
-        assert login._is_products_page(
-            "https://ep.iotcc.telkomsel.com/portal/#!products"
-        ) is False
+        assert login._is_products_page("https://ep.iotcc.telkomsel.com/portal/#!products") is False
 
     def test_explicit_port_rejected(self, login):
         """Test that an explicit port on the approved host is rejected."""
-        assert login._is_products_page(
-            "https://ep.iotcc.telkomsel.com:8443/#!products"
-        ) is False
-        assert login._is_products_page(
-            "https://ep.iotcc.telkomsel.com:443/#!products"
-        ) is False
+        assert login._is_products_page("https://ep.iotcc.telkomsel.com:8443/#!products") is False
+        assert login._is_products_page("https://ep.iotcc.telkomsel.com:443/#!products") is False
 
     def test_dashboard_url_strictly_validated(self, login):
         """Test that the Dashboard URL is accepted only with strict validation."""
@@ -408,9 +411,7 @@ class TestNavigateToLogin:
         """
         page = AsyncMock()
         page.url = "https://ep.iotcc.telkomsel.com/"
-        page.evaluate = AsyncMock(
-            return_value="https://ep.iotcc.telkomsel.com/"
-        )
+        page.evaluate = AsyncMock(return_value="https://ep.iotcc.telkomsel.com/")
         page.reload = AsyncMock(side_effect=PlaywrightError("NS_ERROR_NET_TIMEOUT"))
 
         with pytest.raises(AuthenticationError, match="Products page was not reached"):
@@ -456,9 +457,7 @@ class TestAuthenticatedState:
         """Test that a lookalike host is never classified as authenticated."""
         page = AsyncMock()
         page.url = "http://ep.iotcc.telkomsel.com.evil.com/#!products"
-        page.evaluate = AsyncMock(
-            return_value="http://ep.iotcc.telkomsel.com.evil.com/#!products"
-        )
+        page.evaluate = AsyncMock(return_value="http://ep.iotcc.telkomsel.com.evil.com/#!products")
         assert await login._is_authenticated(page) is False
 
     @pytest.mark.asyncio
@@ -476,9 +475,7 @@ class TestAuthenticatedState:
         """Test that a lagging page.url is covered by the window.location fallback."""
         page = AsyncMock()
         page.url = "https://ep.iotcc.telkomsel.com/"  # page.url lags behind the SPA
-        page.evaluate = AsyncMock(
-            return_value="https://ep.iotcc.telkomsel.com/#!products"
-        )
+        page.evaluate = AsyncMock(return_value="https://ep.iotcc.telkomsel.com/#!products")
         await login._verify_authentication(page)
         page.wait_for_timeout.assert_not_awaited()
         page.reload.assert_not_awaited()
@@ -535,7 +532,9 @@ class TestAuthenticatedState:
         # The bounded retry must fire twice (3 windows, 2 reloads) and still
         # raise on a sustained slow mount.
         assert page.reload.await_count == 2
-        page.screenshot.assert_awaited_once_with(path=str(Path("output/images/error_auth_failed.png")))
+        page.screenshot.assert_awaited_once_with(
+            path=str(Path("output/images/error_auth_failed.png"))
+        )
 
     @pytest.mark.asyncio
     async def test_verify_authentication_strips_query_and_fragment_from_url(self, login):
@@ -555,7 +554,6 @@ class TestAuthenticatedState:
         assert "ticket=TGT-abc123" not in message
         assert "#token" not in message
         assert "cas/login" in message
-
 
     @pytest.mark.asyncio
     async def test_auth_dom_summary_is_structural_only(self, login):
@@ -614,9 +612,7 @@ class TestAuthenticatedState:
         page = AsyncMock()
         page.url = "https://ep.iotcc.telkomsel.com/"
         page.evaluate = AsyncMock(return_value="https://ep.iotcc.telkomsel.com/")
-        page.reload = AsyncMock(
-            side_effect=PlaywrightError("reload failed token=SECRET123")
-        )
+        page.reload = AsyncMock(side_effect=PlaywrightError("reload failed token=SECRET123"))
         with caplog.at_level("WARNING", logger="cmp_automation.cmp_login"):
             with pytest.raises(
                 AuthenticationError, match="Products page was not reached"
@@ -644,24 +640,18 @@ class TestAuthenticatedState:
         class _ClosedPage:
             @property
             def url(self) -> str:
-                raise PlaywrightError(
-                    "Target page, context or browser has been closed"
-                )
+                raise PlaywrightError("Target page, context or browser has been closed")
 
         page = _ClosedPage()
         page.evaluate = AsyncMock(return_value="https://ep.iotcc.telkomsel.com/")
         page.wait_for_timeout = AsyncMock()
         page.reload = AsyncMock(side_effect=PlaywrightError("Target closed"))
 
-        with pytest.raises(
-            AuthenticationError, match="Products page was not reached"
-        ) as excinfo:
+        with pytest.raises(AuthenticationError, match="Products page was not reached") as excinfo:
             await login._verify_authentication(page)
 
         # Normalized: no raw error text, and the URL is reported unavailable.
-        assert "Target page, context or browser has been closed" not in str(
-            excinfo.value
-        )
+        assert "Target page, context or browser has been closed" not in str(excinfo.value)
         assert "URL: <unavailable>" in str(excinfo.value)
         # Bounded recovery still ran: 3 windows, 2 reloads.
         assert page.reload.await_count == 2
@@ -680,9 +670,7 @@ class TestAuthenticatedState:
         page.url = "https://ep.iotcc.telkomsel.com/"
         page.evaluate = AsyncMock(return_value="https://ep.iotcc.telkomsel.com/")
         page.wait_for_timeout = AsyncMock(
-            side_effect=PlaywrightError(
-                "Target page, context or browser has been closed"
-            )
+            side_effect=PlaywrightError("Target page, context or browser has been closed")
         )
         page.reload = AsyncMock(side_effect=PlaywrightError("Target closed"))
 
@@ -752,10 +740,12 @@ class TestSubmitToken:
             await login._submit_token(page, "123456")
 
         assert button.click.await_count == 2
-        button.click.assert_has_awaits([
-            call(timeout=3000),
-            call(force=True, timeout=3000),
-        ])
+        button.click.assert_has_awaits(
+            [
+                call(timeout=3000),
+                call(force=True, timeout=3000),
+            ]
+        )
 
     @pytest.mark.asyncio
     async def test_submit_token_button_click_moves_to_next_candidate_when_force_fails(self, login):
@@ -763,7 +753,9 @@ class TestSubmitToken:
         btn1 = MagicMock()
         btn1.first = btn1
         btn1.count = AsyncMock(return_value=1)
-        btn1.click = AsyncMock(side_effect=[PlaywrightTimeoutError("timeout"), PlaywrightError("error")])
+        btn1.click = AsyncMock(
+            side_effect=[PlaywrightTimeoutError("timeout"), PlaywrightError("error")]
+        )
 
         btn2 = MagicMock()
         btn2.first = btn2
@@ -777,7 +769,9 @@ class TestSubmitToken:
 
         page = MagicMock()
         page.locator = MagicMock(
-            side_effect=lambda sel: locators.get(sel, MagicMock(first=MagicMock(count=AsyncMock(return_value=0))))
+            side_effect=lambda sel: locators.get(
+                sel, MagicMock(first=MagicMock(count=AsyncMock(return_value=0)))
+            )
         )
 
         with patch.object(login, "_try_fill", new=AsyncMock(return_value=True)):
@@ -909,6 +903,8 @@ class TestSubmitToken:
         with patch.object(login, "_try_fill", new=AsyncMock(return_value=False)):
             with pytest.raises(AuthenticationError, match="Could not find token input field"):
                 await login._submit_token(page, "123456")
+
+
 class TestWaitForTokenPage:
     """Token page wait retries once when the credential form never navigated."""
 

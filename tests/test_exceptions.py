@@ -1,6 +1,5 @@
 """Tests for exception classes."""
 
-
 from cmp_automation.exceptions import (
     AuthenticationError,
     BrowserError,

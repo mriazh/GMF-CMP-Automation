@@ -245,24 +245,28 @@ class CMPLogin:
                     )
         raise BrowserError(
             "Timeout navigating to CMP login page",
-            f"last error category: {last_error_category}"
-            if last_error_category
-            else None,
+            f"last error category: {last_error_category}" if last_error_category else None,
         )
 
     async def _fill_credentials(self, page: Page) -> None:
         """Fill username and password fields."""
         logger.debug("Filling credentials")
 
-        username_filled = await self._try_fill(page, self.USERNAME_SELECTORS, self.config.cmp_username, "username")
+        username_filled = await self._try_fill(
+            page, self.USERNAME_SELECTORS, self.config.cmp_username, "username"
+        )
         if not username_filled:
             raise AuthenticationError("Could not find username input field")
 
-        password_filled = await self._try_fill(page, self.PASSWORD_SELECTORS, self.config.cmp_password, "password")
+        password_filled = await self._try_fill(
+            page, self.PASSWORD_SELECTORS, self.config.cmp_password, "password"
+        )
         if not password_filled:
             raise AuthenticationError("Could not find password input field")
 
-    async def _try_fill(self, page: Page, selectors: list[str], value: str, field_name: str) -> bool:
+    async def _try_fill(
+        self, page: Page, selectors: list[str], value: str, field_name: str
+    ) -> bool:
         """Try to fill a field using multiple selector fallbacks."""
         for selector in selectors:
             try:
@@ -562,9 +566,7 @@ class CMPLogin:
             return True
         # SPA hash navigation may lag behind page.url - fall back to JS state.
         href = await self._window_href(page)
-        if href is not None and (
-            self._is_products_page(href) or self._is_dashboard_page(href)
-        ):
+        if href is not None and (self._is_products_page(href) or self._is_dashboard_page(href)):
             return True
         return False
 
@@ -687,9 +689,7 @@ class CMPLogin:
         parts = []
         for key, value in info.items():
             if isinstance(value, list):
-                parts.append(
-                    f"{key}[{len(value)}]: " + " | ".join(str(v) for v in value[:10])
-                )
+                parts.append(f"{key}[{len(value)}]: " + " | ".join(str(v) for v in value[:10]))
             else:
                 parts.append(f"{key}={value}")
         if not parts:

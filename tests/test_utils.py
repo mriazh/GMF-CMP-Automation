@@ -38,12 +38,18 @@ class TestGenerateExportFilename:
     def test_end_of_year_rollover(self):
         """Test filename around a year boundary."""
         dt = datetime(2024, 12, 31, 23, 59, 59, tzinfo=ZoneInfo("Asia/Jakarta"))
-        assert generate_export_filename(dt, Path(".")).name == "report_20241231_DAILY_USAGE_by_SIM.xlsx"
+        assert (
+            generate_export_filename(dt, Path(".")).name
+            == "report_20241231_DAILY_USAGE_by_SIM.xlsx"
+        )
 
     def test_single_digit_components_padded(self):
         """Test that month/day/hour components are zero-padded."""
         dt = datetime(2024, 6, 1, 8, 5, 7, tzinfo=ZoneInfo("Asia/Jakarta"))
-        assert generate_export_filename(dt, Path(".")).name == "report_20240601_DAILY_USAGE_by_SIM.xlsx"
+        assert (
+            generate_export_filename(dt, Path(".")).name
+            == "report_20240601_DAILY_USAGE_by_SIM.xlsx"
+        )
 
     def test_edited_suffix_derivation(self):
         """Test the documented ' - Edited' suffix for the final report."""

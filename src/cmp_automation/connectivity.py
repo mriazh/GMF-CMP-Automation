@@ -159,7 +159,9 @@ class CheckPointClient:
         if current.connected:
             return
         if not allow_connect:
-            raise ConnectivityError("Check Point is not connected; explicit connect approval is required")
+            raise ConnectivityError(
+                "Check Point is not connected; explicit connect approval is required"
+            )
         result = _run_command(self.executable, self.command_connect()[1:], 60.0, self._runner)
         if result.returncode != 0:
             raise ConnectivityError("Check Point connect failed")
@@ -171,7 +173,9 @@ class CheckPointClient:
         if not self.owned or not allow_disconnect:
             return
         try:
-            result = _run_command(self.executable, self.command_disconnect()[1:], 30.0, self._runner)
+            result = _run_command(
+                self.executable, self.command_disconnect()[1:], 30.0, self._runner
+            )
             if result.returncode != 0:
                 raise ConnectivityError("Check Point disconnect failed")
         finally:
@@ -218,7 +222,9 @@ class WarpClient:
             if self.is_proxy_listening(port=target_port):
                 st = self.status()
                 if st.connected and (st.mode or "").lower() == "proxy":
-                    logger.info("WARP proxy already listening and connected on port %d", target_port)
+                    logger.info(
+                        "WARP proxy already listening and connected on port %d", target_port
+                    )
                     return True
         except Exception as exc:
             logger.debug("Initial WARP proxy check error: %s", exc)
@@ -250,7 +256,9 @@ class WarpClient:
                 st = self.status()
                 if st.connected and self.is_proxy_listening(port=target_port):
                     self.owned = True
-                    logger.info("WARP proxy successfully connected and listening on port %d", target_port)
+                    logger.info(
+                        "WARP proxy successfully connected and listening on port %d", target_port
+                    )
                     return True
             except Exception as exc:
                 logger.debug("Polling WARP status encountered error: %s", exc)
@@ -281,7 +289,9 @@ class WarpClient:
         current = self.status()
         if not current.connected:
             if not allow_connect:
-                raise ConnectivityError("WARP is not connected; explicit connect approval is required")
+                raise ConnectivityError(
+                    "WARP is not connected; explicit connect approval is required"
+                )
             result = _run_command(self.executable, self.command_connect()[1:], 60.0, self._runner)
             if result.returncode != 0:
                 raise ConnectivityError("WARP connect failed")
@@ -293,7 +303,10 @@ class WarpClient:
 
     def validate_trace(self) -> None:
         parsed = urlparse(self.config.warp_trace_url)
-        if parsed.scheme != "https" or parsed.hostname not in {"cloudflare.com", "www.cloudflare.com"}:
+        if parsed.scheme != "https" or parsed.hostname not in {
+            "cloudflare.com",
+            "www.cloudflare.com",
+        }:
             raise ConnectivityError("WARP trace URL is not approved")
         request = Request(self.config.warp_trace_url, method="GET")
         try:
@@ -319,7 +332,9 @@ class WarpClient:
         if not self.owned or not allow_disconnect:
             return
         try:
-            result = _run_command(self.executable, self.command_disconnect()[1:], 30.0, self._runner)
+            result = _run_command(
+                self.executable, self.command_disconnect()[1:], 30.0, self._runner
+            )
             if result.returncode != 0:
                 raise ConnectivityError("WARP disconnect failed")
         finally:

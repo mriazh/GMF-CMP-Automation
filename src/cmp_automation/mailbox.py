@@ -97,42 +97,63 @@ class MailboxClient:
         """Connect, login, and select the INBOX read-only."""
         if self._connection is not None:
             return
-        host = self.config.gmf_imap_host
+        primary_host = self.config.gmf_imap_host
         port = self.config.gmf_imap_port
-        logger.info("Connecting to corporate IMAP %s:%s (IMAPS)", host, port)
+        candidate_hosts = [primary_host]
+        if (
+            self.config.corp_imap_fallback_host
+            and self.config.corp_imap_fallback_host not in candidate_hosts
+        ):
+            candidate_hosts.append(self.config.corp_imap_fallback_host)
+
+        logger.info("Connecting to corporate IMAP %s:%s (IMAPS)", primary_host, port)
         conn: imaplib.IMAP4_SSL | None = None
         max_attempts = 3
+        last_exc: Exception | None = None
         for attempt in range(1, max_attempts + 1):
-            try:
-                conn = imaplib.IMAP4_SSL(host, port, timeout=self.IMAP_TIMEOUT_SECONDS)
-                conn.login(self.config.gmf_email, self.config.gmf_password)
-                status, _ = conn.select("INBOX", readonly=True)
-                if status != "OK":
-                    raise OTPError("Failed to select INBOX mailbox")
-                self._connection = conn
-                # Snapshot the highest UID at connect time (before authentication)
-                # so that stale OTP emails from a previous run are never accepted.
-                self._base_uid = 0
-                self._take_uid_snapshot()
-                logger.info("Connected to corporate IMAP mailbox (read-only)")
-                return
-            except OTPError:
-                self._close_connection(conn)
-                raise
-            except Exception as exc:
-                self._close_connection(conn)
-                conn = None
-                # Fast-fail for credential/authentication rejections, only retry connection drops/timeouts
-                if "auth" in str(exc).lower() or attempt >= max_attempts:
-                    logger.warning("IMAP connection failed: %s", type(exc).__name__)
-                    raise OTPError("IMAP connection failed") from exc
-                logger.warning(
-                    "IMAP connection attempt %d/%d failed (%s); retrying in 1s",
-                    attempt,
-                    max_attempts,
-                    type(exc).__name__,
-                )
+            for host in candidate_hosts:
+                try:
+                    if host != primary_host:
+                        logger.info("Connecting via fallback IMAP host %s:%s (IMAPS)", host, port)
+                    conn = imaplib.IMAP4_SSL(host, port, timeout=self.IMAP_TIMEOUT_SECONDS)
+                    conn.login(self.config.gmf_email, self.config.gmf_password)
+                    status, _ = conn.select("INBOX", readonly=True)
+                    if status != "OK":
+                        raise OTPError("Failed to select INBOX mailbox")
+                    self._connection = conn
+                    # Snapshot the highest UID at connect time (before authentication)
+                    # so that stale OTP emails from a previous run are never accepted.
+                    self._base_uid = 0
+                    self._take_uid_snapshot()
+                    logger.info("Connected to corporate IMAP mailbox (read-only)")
+                    return
+                except OTPError:
+                    self._close_connection(conn)
+                    raise
+                except Exception as exc:
+                    self._close_connection(conn)
+                    conn = None
+                    last_exc = exc
+                    # Fast-fail for credential/authentication rejections, only retry connection drops/timeouts
+                    if "auth" in str(exc).lower():
+                        logger.warning("IMAP connection failed: %s", type(exc).__name__)
+                        raise OTPError("IMAP connection failed") from exc
+                    logger.warning(
+                        "IMAP connection to %s attempt %d/%d failed (%s)",
+                        host,
+                        attempt,
+                        max_attempts,
+                        type(exc).__name__,
+                    )
+            if attempt < max_attempts:
                 time.sleep(1.0)
+
+        logger.warning(
+            "IMAP connection failed after %d attempts: %s",
+            max_attempts,
+            type(last_exc).__name__ if last_exc else "unknown",
+        )
+        raise OTPError("IMAP connection failed") from last_exc
 
     @staticmethod
     def _close_connection(conn: imaplib.IMAP4_SSL | None) -> None:
@@ -271,9 +292,7 @@ class MailboxClient:
         # that a mail-server clock slightly behind the client clock does not
         # cause fresh OTP emails to be falsely rejected as stale. The UID
         # baseline above still rejects leftovers from previous runs.
-        cutoff = workflow_start - timedelta(
-            seconds=self.config.otp_clock_skew_tolerance_seconds
-        )
+        cutoff = workflow_start - timedelta(seconds=self.config.otp_clock_skew_tolerance_seconds)
         valid = [
             message
             for message in messages
@@ -281,9 +300,7 @@ class MailboxClient:
             and message.received_at >= cutoff
         ]
         if not valid:
-            logger.debug(
-                "No valid OTP message found (polled %d candidate(s))", len(messages)
-            )
+            logger.debug("No valid OTP message found (polled %d candidate(s))", len(messages))
             return None
 
         newest = max(valid, key=lambda message: message.received_at)
@@ -322,7 +339,9 @@ class MailboxClient:
             return []
         criteria = f'(SINCE "{since_date}" HEADER Subject "{self.config.otp_email_subject}")'
         status, data = self._connection.uid(
-            "search", None, criteria  # type: ignore[arg-type]  # imaplib accepts None charset
+            "search",
+            None,  # type: ignore[arg-type]  # imaplib accepts None charset
+            criteria,
         )
         if status != "OK" or not data:
             return []

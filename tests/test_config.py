@@ -170,6 +170,26 @@ class TestConfig:
             config = Config()
             assert config.gmf_imap_host == "imap.example.com"
             assert config.gmf_imap_port == 1430
+            assert config.gmf_imap_fallback_host is None
+
+    def test_imap_fallback_host_configured(self, monkeypatch):
+        """Test that IMAP fallback host can be set via env var."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            profile_dir = Path(tmpdir) / "firefox_profile"
+            download_dir = Path(tmpdir) / "downloads"
+            profile_dir.mkdir()
+            download_dir.mkdir()
+
+            monkeypatch.setenv("CMP_USERNAME", "testuser")
+            monkeypatch.setenv("CMP_PASSWORD", "testpass")
+            monkeypatch.setenv("GMF_EMAIL", "test@example.com")
+            monkeypatch.setenv("GMF_PASSWORD", "mailpass")
+            monkeypatch.setenv("FIREFOX_PROFILE_DIR", str(profile_dir))
+            monkeypatch.setenv("DOWNLOAD_DIR", str(download_dir))
+            monkeypatch.setenv("GMF_IMAP_FALLBACK_HOST", "192.0.2.10")
+
+            config = Config()
+            assert config.gmf_imap_fallback_host == "192.0.2.10"
 
     def test_imap_port_bounds(self, monkeypatch):
         """Test that an out-of-range IMAP port is rejected."""

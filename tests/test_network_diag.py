@@ -48,10 +48,7 @@ class TestSanitizeUrl:
     """Query, fragment, and userinfo are stripped from reported URLs."""
 
     def test_query_fragment_userinfo_stripped(self):
-        url = (
-            "https://user:pass@ep.iotcc.telkomsel.com/export"
-            "?token=SECRET123&id=42#frag"
-        )
+        url = "https://user:pass@ep.iotcc.telkomsel.com/export?token=SECRET123&id=42#frag"
         assert _sanitize_url(url) == "https://ep.iotcc.telkomsel.com/export"
 
     def test_no_query_no_change(self):
@@ -69,8 +66,7 @@ class TestSanitizeFailure:
 
     def test_known_error_code_kept(self):
         failure = (
-            "net::ERR_ABORTED navigating to "
-            "https://ep.iotcc.telkomsel.com/export?token=SECRET123"
+            "net::ERR_ABORTED navigating to https://ep.iotcc.telkomsel.com/export?token=SECRET123"
         )
         assert _sanitize_failure(failure) == "net::ERR_ABORTED"
 
@@ -98,10 +94,7 @@ class TestSummarySanitization:
         diag = NetworkDiag()
         diag.attach(page)
         req = _request(
-            url=(
-                "https://user:pass@ep.iotcc.telkomsel.com/export"
-                "?token=SECRET123&id=42#frag"
-            )
+            url=("https://user:pass@ep.iotcc.telkomsel.com/export?token=SECRET123&id=42#frag")
         )
         page.fire("request", req)
         page.fire("response", _response(req, status=200))
@@ -137,8 +130,7 @@ class TestSummarySanitization:
         diag.attach(page)
         req = _request()
         req.failure = (
-            "net::ERR_CONNECTION_RESET "
-            "https://ep.iotcc.telkomsel.com/export?token=SECRET123"
+            "net::ERR_CONNECTION_RESET https://ep.iotcc.telkomsel.com/export?token=SECRET123"
         )
         page.fire("request", req)
         page.fire("requestfailed", req)

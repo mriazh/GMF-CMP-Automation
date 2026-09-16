@@ -72,8 +72,10 @@ class TestGetLatestOtp:
         expected = _token(start)
         mailbox.set_workflow_start_time(start)
 
-        with patch.object(mailbox, "connect", new=AsyncMock()) as mock_connect, \
-             patch.object(mailbox, "_poll_once", return_value=expected) as mock_poll:
+        with (
+            patch.object(mailbox, "connect", new=AsyncMock()) as mock_connect,
+            patch.object(mailbox, "_poll_once", return_value=expected) as mock_poll,
+        ):
             result = await mailbox.get_latest_otp("CMP - YOUR TOKEN", 120, 5)
 
         assert result is expected
@@ -87,9 +89,11 @@ class TestGetLatestOtp:
         token = _token(start)
         mailbox.set_workflow_start_time(start)
 
-        with patch.object(mailbox, "connect", new=AsyncMock()), \
-             patch.object(mailbox, "_poll_once", side_effect=[None, token]) as mock_poll, \
-             patch("asyncio.sleep", new=AsyncMock()):
+        with (
+            patch.object(mailbox, "connect", new=AsyncMock()),
+            patch.object(mailbox, "_poll_once", side_effect=[None, token]) as mock_poll,
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
             result = await mailbox.get_latest_otp("CMP - YOUR TOKEN", 10, 1)
 
         assert result is token
@@ -101,8 +105,10 @@ class TestGetLatestOtp:
         start = _start()
         mailbox.set_workflow_start_time(start)
 
-        with patch.object(mailbox, "connect", new=AsyncMock()), \
-             patch.object(mailbox, "_poll_once", return_value=None):
+        with (
+            patch.object(mailbox, "connect", new=AsyncMock()),
+            patch.object(mailbox, "_poll_once", return_value=None),
+        ):
             with pytest.raises(OTPTimeoutError, match="timed out"):
                 await mailbox.get_latest_otp("CMP - YOUR TOKEN", 0, 1)
 
@@ -112,8 +118,10 @@ class TestGetLatestOtp:
         start = _start()
         mailbox.set_workflow_start_time(start)
 
-        with patch.object(mailbox, "connect", new=AsyncMock()), \
-             patch.object(mailbox, "_poll_once", return_value=None):
+        with (
+            patch.object(mailbox, "connect", new=AsyncMock()),
+            patch.object(mailbox, "_poll_once", return_value=None),
+        ):
             with pytest.raises(OTPTimeoutError) as excinfo:
                 await mailbox.get_latest_otp("CMP - YOUR TOKEN", 0, 1)
 
@@ -138,14 +146,20 @@ class TestPollOnce:
         start = _start()
         mailbox._connection = MagicMock()
         messages = [
-            _message("1", received=datetime(2024, 1, 15, 12, 5, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
-            _message("2", received=datetime(2024, 1, 15, 12, 10, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
+            _message(
+                "1", received=datetime(2024, 1, 15, 12, 5, 0, tzinfo=ZoneInfo("Asia/Jakarta"))
+            ),
+            _message(
+                "2", received=datetime(2024, 1, 15, 12, 10, 0, tzinfo=ZoneInfo("Asia/Jakarta"))
+            ),
         ]
 
-        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
-             patch.object(mailbox, "_search_uids", return_value=[b"1", b"2"]), \
-             patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]), \
-             patch.object(mailbox, "_parse_message", side_effect=messages):
+        with (
+            patch.object(mailbox, "_refresh_mailbox", new=MagicMock()),
+            patch.object(mailbox, "_search_uids", return_value=[b"1", b"2"]),
+            patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]),
+            patch.object(mailbox, "_parse_message", side_effect=messages),
+        ):
             result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is not None
@@ -161,14 +175,20 @@ class TestPollOnce:
         mailbox._connection = MagicMock()
         messages = [
             # 3 minutes early - outside the 120s clock-skew tolerance window
-            _message("1", received=datetime(2024, 1, 15, 11, 57, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
-            _message("2", received=datetime(2024, 1, 14, 23, 59, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
+            _message(
+                "1", received=datetime(2024, 1, 15, 11, 57, 0, tzinfo=ZoneInfo("Asia/Jakarta"))
+            ),
+            _message(
+                "2", received=datetime(2024, 1, 14, 23, 59, 0, tzinfo=ZoneInfo("Asia/Jakarta"))
+            ),
         ]
 
-        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
-             patch.object(mailbox, "_search_uids", return_value=[b"1", b"2"]), \
-             patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]), \
-             patch.object(mailbox, "_parse_message", side_effect=messages):
+        with (
+            patch.object(mailbox, "_refresh_mailbox", new=MagicMock()),
+            patch.object(mailbox, "_search_uids", return_value=[b"1", b"2"]),
+            patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]),
+            patch.object(mailbox, "_parse_message", side_effect=messages),
+        ):
             result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is None
@@ -178,10 +198,12 @@ class TestPollOnce:
         start = _start()
         mailbox._connection = MagicMock()
 
-        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
-             patch.object(mailbox, "_search_uids", return_value=[b"1"]), \
-             patch.object(mailbox, "_fetch_message", return_value=("data",)), \
-             patch.object(mailbox, "_parse_message", return_value=_message("1", received=start)):
+        with (
+            patch.object(mailbox, "_refresh_mailbox", new=MagicMock()),
+            patch.object(mailbox, "_search_uids", return_value=[b"1"]),
+            patch.object(mailbox, "_fetch_message", return_value=("data",)),
+            patch.object(mailbox, "_parse_message", return_value=_message("1", received=start)),
+        ):
             result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is not None
@@ -192,15 +214,27 @@ class TestPollOnce:
         start = _start()
         mailbox._connection = MagicMock()
 
-        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
-             patch.object(mailbox, "_search_uids", return_value=[b"1", b"2"]), \
-             patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]), \
-             patch.object(mailbox, "_parse_message", side_effect=[
-                 _message("1", subject="CMP - YOUR TOKEN", received=datetime(
-                     2024, 1, 15, 12, 6, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
-                 _message("2", subject="Weekly Report", received=datetime(
-                     2024, 1, 15, 12, 7, 0, tzinfo=ZoneInfo("Asia/Jakarta"))),
-             ]):
+        with (
+            patch.object(mailbox, "_refresh_mailbox", new=MagicMock()),
+            patch.object(mailbox, "_search_uids", return_value=[b"1", b"2"]),
+            patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]),
+            patch.object(
+                mailbox,
+                "_parse_message",
+                side_effect=[
+                    _message(
+                        "1",
+                        subject="CMP - YOUR TOKEN",
+                        received=datetime(2024, 1, 15, 12, 6, 0, tzinfo=ZoneInfo("Asia/Jakarta")),
+                    ),
+                    _message(
+                        "2",
+                        subject="Weekly Report",
+                        received=datetime(2024, 1, 15, 12, 7, 0, tzinfo=ZoneInfo("Asia/Jakarta")),
+                    ),
+                ],
+            ),
+        ):
             result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is not None
@@ -214,12 +248,14 @@ class TestPollOnce:
         start = _start()
         mailbox._connection = MagicMock()
 
-        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
-             patch.object(mailbox, "_search_uids", return_value=[b"1"]), \
-             patch.object(mailbox, "_fetch_message", return_value=("data",)), \
-             patch.object(mailbox, "_parse_message", return_value=_message(
-                 "1", body="No code here."
-             )):
+        with (
+            patch.object(mailbox, "_refresh_mailbox", new=MagicMock()),
+            patch.object(mailbox, "_search_uids", return_value=[b"1"]),
+            patch.object(mailbox, "_fetch_message", return_value=("data",)),
+            patch.object(
+                mailbox, "_parse_message", return_value=_message("1", body="No code here.")
+            ),
+        ):
             result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is None
@@ -230,12 +266,21 @@ class TestPollOnce:
         mailbox._connection = MagicMock()
         mailbox._base_uid = 5
 
-        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
-             patch.object(mailbox, "_search_uids", return_value=[b"3", b"7"]), \
-             patch.object(mailbox, "_fetch_message", side_effect=[("data",), ("data",)]) as mock_fetch, \
-             patch.object(mailbox, "_parse_message", side_effect=[
-                 _message("3"), _message("7"),
-             ]):
+        with (
+            patch.object(mailbox, "_refresh_mailbox", new=MagicMock()),
+            patch.object(mailbox, "_search_uids", return_value=[b"3", b"7"]),
+            patch.object(
+                mailbox, "_fetch_message", side_effect=[("data",), ("data",)]
+            ) as mock_fetch,
+            patch.object(
+                mailbox,
+                "_parse_message",
+                side_effect=[
+                    _message("3"),
+                    _message("7"),
+                ],
+            ),
+        ):
             result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
             # Only UID 7 (above baseline) is parsed and considered
@@ -249,10 +294,14 @@ class TestPollOnce:
         mailbox._connection = MagicMock()
         within_tolerance = start - timedelta(seconds=60)  # 60s early < 120s tolerance
 
-        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
-             patch.object(mailbox, "_search_uids", return_value=[b"1"]), \
-             patch.object(mailbox, "_fetch_message", return_value=("data",)), \
-             patch.object(mailbox, "_parse_message", return_value=_message("1", received=within_tolerance)):
+        with (
+            patch.object(mailbox, "_refresh_mailbox", new=MagicMock()),
+            patch.object(mailbox, "_search_uids", return_value=[b"1"]),
+            patch.object(mailbox, "_fetch_message", return_value=("data",)),
+            patch.object(
+                mailbox, "_parse_message", return_value=_message("1", received=within_tolerance)
+            ),
+        ):
             result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is not None
@@ -264,28 +313,32 @@ class TestPollOnce:
         mailbox._connection = MagicMock()
         too_old = start - timedelta(seconds=300)  # 5 min early > 120s tolerance
 
-        with patch.object(mailbox, "_refresh_mailbox", new=MagicMock()), \
-             patch.object(mailbox, "_search_uids", return_value=[b"1"]), \
-             patch.object(mailbox, "_fetch_message", return_value=("data",)), \
-             patch.object(mailbox, "_parse_message", return_value=_message("1", received=too_old)):
+        with (
+            patch.object(mailbox, "_refresh_mailbox", new=MagicMock()),
+            patch.object(mailbox, "_search_uids", return_value=[b"1"]),
+            patch.object(mailbox, "_fetch_message", return_value=("data",)),
+            patch.object(mailbox, "_parse_message", return_value=_message("1", received=too_old)),
+        ):
             result = mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is None
 
     def test_clock_skew_tolerance_zero_preserves_strict_behavior(self, mailbox):
         """Test that tolerance=0 keeps the strict pre-tolerance timestamp check."""
-        strict_config = mailbox.config.model_copy(
-            update={"otp_clock_skew_tolerance_seconds": 0}
-        )
+        strict_config = mailbox.config.model_copy(update={"otp_clock_skew_tolerance_seconds": 0})
         strict_mailbox = MailboxClient(strict_config)
         start = _start()
         strict_mailbox._connection = MagicMock()
         one_sec_early = start - timedelta(seconds=1)
 
-        with patch.object(strict_mailbox, "_refresh_mailbox", new=MagicMock()), \
-             patch.object(strict_mailbox, "_search_uids", return_value=[b"1"]), \
-             patch.object(strict_mailbox, "_fetch_message", return_value=("data",)), \
-             patch.object(strict_mailbox, "_parse_message", return_value=_message("1", received=one_sec_early)):
+        with (
+            patch.object(strict_mailbox, "_refresh_mailbox", new=MagicMock()),
+            patch.object(strict_mailbox, "_search_uids", return_value=[b"1"]),
+            patch.object(strict_mailbox, "_fetch_message", return_value=("data",)),
+            patch.object(
+                strict_mailbox, "_parse_message", return_value=_message("1", received=one_sec_early)
+            ),
+        ):
             result = strict_mailbox._poll_once("CMP - YOUR TOKEN", start)
 
         assert result is None
@@ -305,8 +358,10 @@ class TestConnectAndDisconnect:
         """Test a successful IMAP connect with login and read-only select."""
         mock_conn = MagicMock()
         mock_conn.select.return_value = ("OK", [])
-        with patch("cmp_automation.mailbox.imaplib.IMAP4_SSL", return_value=mock_conn) as mock_ssl, \
-             patch.object(mailbox, "_take_uid_snapshot", new=MagicMock()) as mock_snapshot:
+        with (
+            patch("cmp_automation.mailbox.imaplib.IMAP4_SSL", return_value=mock_conn) as mock_ssl,
+            patch.object(mailbox, "_take_uid_snapshot", new=MagicMock()) as mock_snapshot,
+        ):
             await mailbox.connect()
 
         mock_ssl.assert_called_once_with(
@@ -315,6 +370,31 @@ class TestConnectAndDisconnect:
         mock_conn.login.assert_called_once_with(config.gmf_email, config.gmf_password)
         mock_conn.select.assert_called_once_with("INBOX", readonly=True)
         mock_snapshot.assert_called_once()
+        assert mailbox._connection is mock_conn
+
+    @pytest.mark.asyncio
+    async def test_connect_fallback_to_internal_ip_on_timeout(self, mailbox, config):
+        """When hostname connection times out, it tries the configured fallback host."""
+        mailbox.config.corp_imap_host = "mail.company.local"
+        mailbox.config.corp_imap_fallback_host = "192.0.2.10"
+        mock_conn = MagicMock()
+        mock_conn.select.return_value = ("OK", [])
+
+        # First call (primary host) raises TimeoutError, second call (fallback host) succeeds
+        def ssl_side_effect(host, port, timeout):
+            if host == "mail.company.local":
+                raise TimeoutError("Hostname timed out")
+            return mock_conn
+
+        with (
+            patch(
+                "cmp_automation.mailbox.imaplib.IMAP4_SSL", side_effect=ssl_side_effect
+            ) as mock_ssl,
+            patch.object(mailbox, "_take_uid_snapshot", new=MagicMock()),
+        ):
+            await mailbox.connect()
+
+        assert mock_ssl.call_count == 2
         assert mailbox._connection is mock_conn
 
     @pytest.mark.asyncio
