@@ -547,13 +547,31 @@ class TestLifecycleNotifications:
         assert "SUCCESS" in transport.messages[1]
 
     @pytest.mark.asyncio
-    async def test_generate_mode_sends_nothing(self, tmp_path: Path) -> None:
-        """generate mode is unchanged: no notifications at all."""
+    async def test_generate_mode_sends_start_then_one_terminal_event(self, tmp_path: Path) -> None:
+        """generate mode emits START followed by exactly one SUCCESS."""
         config = build_notified_config(tmp_path)
         exit_code, transport = await self.run_main(config, build_args(mode="generate"))
 
         assert exit_code == 0
-        assert transport.calls == []
+        assert len(transport.calls) == 2
+        assert "START" in transport.messages[0]
+        assert "SUCCESS" in transport.messages[1]
+        assert "mode=generate" in transport.messages[0]
+
+    @pytest.mark.asyncio
+    async def test_generate_mode_failure_sends_single_failed_event(self, tmp_path: Path) -> None:
+        """A failing generate run reports START plus exactly one FAILED."""
+        config = build_notified_config(tmp_path)
+        exit_code, transport = await self.run_main(
+            config,
+            build_args(mode="generate"),
+            workflow_error=CMPAutomationError("workbook locked"),
+        )
+
+        assert exit_code == 1
+        assert len(transport.calls) == 2
+        assert "START" in transport.messages[0]
+        assert "FAILED" in transport.messages[1]
 
     @pytest.mark.asyncio
     async def test_workflow_failure_sends_single_failed_event(self, tmp_path: Path) -> None:

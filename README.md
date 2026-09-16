@@ -82,7 +82,7 @@ Dashboard images are saved under the configured image/download directory and emb
 
 Run lifecycle notifications can be delivered to a WhatsApp recipient through a
 [GOWA](https://github.com/aldinokemih/gowaha) gateway. They are **disabled by
-default** and only affect `full` and `scrape` runs; `generate` never notifies.
+default** and apply to `full`, `scrape`, and `generate` runs.
 
 Enable them in the local (gitignored) `.env`:
 

@@ -23,8 +23,8 @@ from .workflow import run_workflow
 
 logger = logging.getLogger(__name__)
 
-# Only these modes notify; ``generate`` stays unnotified by design.
-NOTIFIED_MODES = frozenset({"full", "scrape"})
+# Modes that emit WhatsApp lifecycle notifications.
+NOTIFIED_MODES = frozenset({"full", "scrape", "generate"})
 
 
 def parse_date_arg(val: str | None) -> date | None:

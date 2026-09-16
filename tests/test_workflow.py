@@ -1,6 +1,7 @@
 """Tests for workflow orchestration."""
 
 import logging
+import os
 from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,9 +13,23 @@ from cmp_automation.config import Config
 from cmp_automation.connectivity import ConnectivityController, WarpClient
 from cmp_automation.dashboard import DashboardCapture
 from cmp_automation.excel_report import ExcelReportGenerator
+from cmp_automation.exceptions import WorkflowError
 from cmp_automation.mailbox import MailboxClient
 from cmp_automation.usage_query import UsageQueryExporter, UsageReportArtifact
 from cmp_automation.workflow import UsageWorkflowRunner, run_workflow
+
+
+def _write_usage_xlsx(path: Path, record_date: date) -> Path:
+    """Write a minimal Usage Query XLSX whose rows carry ``record_date``."""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Date", "ICCID", "Total Data Usage"])
+    ws.append([record_date.strftime("%Y-%m-%d"), "8962100012747108709", 1024])
+    wb.save(path)
+    wb.close()
+    return path
 
 
 @pytest.fixture
@@ -213,6 +228,97 @@ class TestWorkflow:
             mock_export.assert_called_once()
             mock_dashboard.assert_called_once()
             mock_excel.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_generate_mode_auto_discovery_matches_next_day_export(
+        self, config: Config
+    ) -> None:
+        """Discovery accepts a next-day timestamp file holding target_date rows.
+
+        The daily run on day H at 00:30 exports H-1 data under day H's
+        timestamp, so `report_{target+1}_*` is the correct file and the
+        same-day-timestamp file holding other-day data must be rejected.
+        """
+        target = date(2026, 3, 1)
+        raw_dir = config.excel_output_dir / "raw"
+        image_dir = config.excel_output_dir / "images"
+        # Pin artifact dirs: the local .env may point them elsewhere.
+        config.raw_xlsx_dir = raw_dir
+        config.image_dir = image_dir
+
+        raw_dir.mkdir(parents=True, exist_ok=True)
+
+        correct = _write_usage_xlsx(
+            raw_dir / "report_20260302_003000_DAILY_USAGE_by_SIM.xlsx", target
+        )
+        wrong_day = _write_usage_xlsx(
+            raw_dir / "report_20260301_120000_DAILY_USAGE_by_SIM.xlsx", date(2026, 2, 28)
+        )
+        # Wrong-day file is newer on disk; only its content decides, not mtime.
+        os.utime(wrong_day, (1_800_000_000, 1_800_000_000))
+
+        image_dir.mkdir(parents=True, exist_ok=True)
+        next_day_image = image_dir / "dashboard_20260302_003000.png"
+        same_day_image = image_dir / "dashboard_20260301_120000.png"
+        next_day_image.write_bytes(b"next-day")
+        same_day_image.write_bytes(b"same-day")
+        os.utime(same_day_image, (1_800_000_000, 1_800_000_000))
+
+        with patch.object(ExcelReportGenerator, "generate_report") as mock_excel:
+            mock_excel.return_value = config.excel_output_dir / "report.xlsx"
+            workflow = UsageWorkflowRunner(config, query_date=target, mode="generate")
+            await workflow.run()
+
+            mock_excel.assert_called_once_with(
+                artifact_or_path=correct,
+                screenshot_path=next_day_image,
+                query_date=target,
+            )
+
+    @pytest.mark.asyncio
+    async def test_generate_mode_auto_discovery_falls_back_to_download_dir(
+        self, config: Config
+    ) -> None:
+        """A matching export staged in download_dir is still discovered."""
+        target = date(2026, 3, 1)
+        # Pin artifact dirs: the local .env may point them elsewhere.
+        config.raw_xlsx_dir = config.excel_output_dir / "raw"
+        config.image_dir = config.excel_output_dir / "images"
+        config.excel_output_dir.joinpath("raw").mkdir(parents=True, exist_ok=True)
+        config.excel_output_dir.joinpath("images").mkdir(parents=True, exist_ok=True)
+        config.download_dir.mkdir(parents=True, exist_ok=True)
+        staged = _write_usage_xlsx(
+            config.download_dir / "report_20260302_003000_DAILY_USAGE_by_SIM.xlsx", target
+        )
+
+        with patch.object(ExcelReportGenerator, "generate_report") as mock_excel:
+            mock_excel.return_value = config.excel_output_dir / "report.xlsx"
+            workflow = UsageWorkflowRunner(config, query_date=target, mode="generate")
+            await workflow.run()
+
+            mock_excel.assert_called_once_with(
+                artifact_or_path=staged,
+                screenshot_path=None,
+                query_date=target,
+            )
+
+    @pytest.mark.asyncio
+    async def test_generate_mode_auto_discovery_raises_when_no_date_matches(
+        self, config: Config
+    ) -> None:
+        """No candidate carries target_date rows, so discovery fails loudly."""
+        target = date(2026, 3, 1)
+        raw_dir = config.excel_output_dir / "raw"
+        # Pin artifact dirs: the local .env may point them elsewhere.
+        config.raw_xlsx_dir = raw_dir
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        _write_usage_xlsx(
+            raw_dir / "report_20260301_120000_DAILY_USAGE_by_SIM.xlsx", date(2026, 2, 28)
+        )
+
+        workflow = UsageWorkflowRunner(config, query_date=target, mode="generate")
+        with pytest.raises(WorkflowError, match="matching raw file"):
+            await workflow.run()
 
     @pytest.mark.asyncio
     async def test_generate_mode_consumes_raw_file(self, config: Config, tmp_path: Path) -> None:

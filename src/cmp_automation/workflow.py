@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import shutil
+from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -19,6 +20,72 @@ from .mailbox import MailboxClient
 from .usage_query import UsageQueryExporter, UsageReportArtifact
 
 logger = logging.getLogger(__name__)
+
+
+def _newest_first(candidates: Iterable[Path]) -> list[Path]:
+    """Sort glob results by modification time, newest first."""
+    return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def _find_matching_raw_file(
+    raw_dir: Path,
+    download_dir: Path,
+    target_date: date,
+    exporter: UsageQueryExporter,
+) -> Path | None:
+    """Find the newest raw export whose rows actually carry ``target_date``.
+
+    Daily automation runs on day H at 00:30 to export H-1 usage data, so the
+    filename timestamp is one day ahead of the data it holds. The filename
+    alone cannot separate the two days, hence the content check on the parsed
+    rows. Candidate ordering: next-day timestamp (the 00:30 run), same-day
+    timestamp, then any raw export, each newest first.
+    """
+    next_day = target_date + timedelta(days=1)
+    target_str = target_date.strftime("%Y-%m-%d")
+    patterns = (
+        f"report_{next_day:%Y%m%d}_*_DAILY_USAGE_by_SIM.xlsx",
+        f"report_{target_date:%Y%m%d}_*_DAILY_USAGE_by_SIM.xlsx",
+        "report_*_DAILY_USAGE_by_SIM.xlsx",
+    )
+
+    seen: set[Path] = set()
+    for directory in (raw_dir, download_dir):
+        for pattern in patterns:
+            for candidate in _newest_first(directory.glob(pattern)):
+                if candidate in seen:
+                    continue
+                seen.add(candidate)
+                try:
+                    records = exporter.parse_usage_data(candidate)
+                except Exception as exc:
+                    # Unreadable or wrong-schema file: skip it, never fail discovery.
+                    logger.warning(
+                        "Skipped unusable raw candidate %s: %s", candidate.name, type(exc).__name__
+                    )
+                    continue
+                if any(r.get("date") == target_str for r in records):
+                    return candidate
+    return None
+
+
+def _find_matching_image(image_dir: Path, target_date: date) -> Path | None:
+    """Find the dashboard screenshot matching ``target_date``.
+
+    Prioritizes the next-day timestamp (the 00:30 run), then the same-day
+    timestamp, then the newest screenshot of any date.
+    """
+    next_day = target_date + timedelta(days=1)
+    patterns = (
+        f"dashboard_{next_day:%Y%m%d}_*.png",
+        f"dashboard_{target_date:%Y%m%d}_*.png",
+        "dashboard_*.png",
+    )
+    for pattern in patterns:
+        candidates = _newest_first(image_dir.glob(pattern))
+        if candidates:
+            return candidates[0]
+    return None
 
 
 class UsageWorkflowRunner:
@@ -153,29 +220,24 @@ class UsageWorkflowRunner:
 
             if raw_xlsx is None:
                 raw_dir = self.config.raw_xlsx_dir or (self.config.excel_output_dir / "raw")
-                pattern = f"report_{target_date:%Y%m%d}_*_DAILY_USAGE_by_SIM.xlsx"
-                candidates = sorted(raw_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-                if not candidates:
-                    candidates = sorted(self.config.download_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-                if candidates:
-                    raw_xlsx = candidates[0]
-                    logger.info("Auto-discovered raw export: %s", raw_xlsx)
-                else:
+                match = _find_matching_raw_file(
+                    raw_dir, self.config.download_dir, target_date, self.usage_exporter
+                )
+                if match is None:
                     raise WorkflowError(
                         f"Generate mode requires --raw-xlsx or a matching raw file in {raw_dir}"
                     )
+                raw_xlsx = match
+                logger.info("Auto-discovered raw export: %s", raw_xlsx)
 
             if not raw_xlsx.exists():
                 raise WorkflowError(f"Raw XLSX input does not exist: {raw_xlsx}")
 
             if image_path is None:
                 image_dir = self.config.image_dir or (self.config.excel_output_dir / "images")
-                pattern = f"dashboard_{target_date:%Y%m%d}_*.png"
-                img_candidates = sorted(image_dir.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
-                if not img_candidates:
-                    img_candidates = sorted(image_dir.glob("dashboard_*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
-                if img_candidates:
-                    image_path = img_candidates[0]
+                match = _find_matching_image(image_dir, target_date)
+                if match is not None:
+                    image_path = match
                     logger.info("Auto-discovered dashboard image: %s", image_path)
 
             report_path = self.excel_report.generate_report(
